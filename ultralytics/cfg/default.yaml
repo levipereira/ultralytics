@@ -85,6 +85,13 @@ simplify: False # (bool) ONNX: simplify model
 opset: # (int, optional) ONNX: opset version
 workspace: 4 # (int) TensorRT: workspace size (GB)
 nms: False # (bool) CoreML: add NMS
+topk_all: 100
+iou_thres: 0.45
+conf_thres: 0.25
+class_agnostic: False
+pooler_scale: 0.25
+sampling_ratio: 0
+mask_resolution: 160
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 lr0: 0.01 # (float) initial learning rate (i.e. SGD=1E-2, Adam=1E-3)
