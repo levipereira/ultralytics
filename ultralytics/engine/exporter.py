@@ -4,19 +4,21 @@ Export a YOLO PyTorch model to other formats. TensorFlow exports authored by htt
 
 Format                  | `format=argument`         | Model
 ---                     | ---                       | ---
-PyTorch                 | -                         | yolo11n.pt
-TorchScript             | `torchscript`             | yolo11n.torchscript
-ONNX                    | `onnx`                    | yolo11n.onnx
-OpenVINO                | `openvino`                | yolo11n_openvino_model/
-TensorRT                | `engine`                  | yolo11n.engine
-CoreML                  | `coreml`                  | yolo11n.mlpackage
-TensorFlow SavedModel   | `saved_model`             | yolo11n_saved_model/
-TensorFlow GraphDef     | `pb`                      | yolo11n.pb
-TensorFlow Lite         | `tflite`                  | yolo11n.tflite
-TensorFlow Edge TPU     | `edgetpu`                 | yolo11n_edgetpu.tflite
-TensorFlow.js           | `tfjs`                    | yolo11n_web_model/
-PaddlePaddle            | `paddle`                  | yolo11n_paddle_model/
-NCNN                    | `ncnn`                    | yolo11n_ncnn_model/
+PyTorch                 | -                         | yolov8n.pt
+TorchScript             | `torchscript`             | yolov8n.torchscript
+ONNX                    | `onnx`                    | yolov8n.onnx
+OpenVINO                | `openvino`                | yolov8n_openvino_model/
+TensorRT                | `engine`                  | yolov8n.engine
+CoreML                  | `coreml`                  | yolov8n.mlpackage
+TensorFlow SavedModel   | `saved_model`             | yolov8n_saved_model/
+TensorFlow GraphDef     | `pb`                      | yolov8n.pb
+TensorFlow Lite         | `tflite`                  | yolov8n.tflite
+TensorFlow Edge TPU     | `edgetpu`                 | yolov8n_edgetpu.tflite
+TensorFlow.js           | `tfjs`                    | yolov8n_web_model/
+PaddlePaddle            | `paddle`                  | yolov8n_paddle_model/
+NCNN                    | `ncnn`                    | yolov8n_ncnn_model/
+ONNX TensorRT           | `onnx`                    | yolov8n_trt.onnx
+
 
 Requirements:
     $ pip install "ultralytics[export]"
@@ -64,6 +66,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+
 from ultralytics.cfg import TASK2DATA, get_cfg
 from ultralytics.data import build_dataloader
 from ultralytics.data.dataset import YOLODataset
@@ -110,6 +113,7 @@ def export_formats():
         ["TensorFlow.js", "tfjs", "_web_model", True, False],
         ["PaddlePaddle", "paddle", "_paddle_model", True, True],
         ["NCNN", "ncnn", "_ncnn_model", True, True],
+        ["ONNX TensorRT", "onnx_trt", "_trt.onnx", True, True],
     ]
     return dict(zip(["Format", "Argument", "Suffix", "CPU", "GPU"], zip(*x)))
 
@@ -190,8 +194,7 @@ class Exporter:
         flags = [x == fmt for x in fmts]
         if sum(flags) != 1:
             raise ValueError(f"Invalid export format='{fmt}'. Valid formats are {fmts}")
-        jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn = flags  # export booleans
-        is_tf_format = any((saved_model, pb, tflite, edgetpu, tfjs))
+        jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn, onnx_trt = flags  # export booleans
 
         # Device
         if fmt == "engine" and self.args.device is None:
@@ -331,6 +334,8 @@ class Exporter:
             f[10], _ = self.export_paddle()
         if ncnn:  # NCNN
             f[11], _ = self.export_ncnn()
+        if onnx_trt:  # ONNX TensorRT
+            f[12], _ = self.export_onnx_trt()
 
         # Finish
         f = [str(x) for x in f if x]  # filter out '' and None
@@ -449,6 +454,112 @@ class Exporter:
 
         onnx.save(model_onnx, f)
         return f, model_onnx
+
+    #@try_export
+    def export_onnx_trt(self, prefix=colorstr("ONNX:")):
+        """YOLOv8 ONNX export."""
+        requirements = ["onnx>=1.12.0"]
+        if self.args.simplify:
+            requirements += ["onnxsim>=0.4.33", "onnxruntime-gpu" if torch.cuda.is_available() else "onnxruntime"]
+            if ARM64:
+                check_requirements("cmake")  # 'cmake' is needed to build onnxsim on aarch64
+        check_requirements(requirements)
+        import onnx  # noqa
+        labels = len(self.model.names)
+        is_det_model=True
+        opset_version = self.args.opset or get_latest_opset()
+        LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
+        f = os.path.splitext(self.file)[0] + "-trt.onnx"
+        batch_size = 'batch'
+        d = {
+            'stride': int(max(self.model.stride)),
+            'names': self.model.names,
+            'model type' : 'Segmentation' if isinstance(self.model, SegmentationModel) else 'Detection',
+            'TRT Compatibility': '8.6 or above',
+            'TRT Plugins': 'YoloNMS, ROIAlign' if isinstance(self.model, SegmentationModel) else 'YoloNMS'  
+            }
+        
+
+        dynamic_axes = {'images': {0 : 'batch', 2: 'height', 3:'width'}, } # variable length axes
+
+        output_axes = {
+                    'num_dets': {0: 'batch'},
+                    'det_boxes': {0: 'batch'},
+                    'det_scores': {0: 'batch'},
+                    'det_classes': {0: 'batch'},
+                 }
+    
+        if not isinstance(self.model, SegmentationModel):
+            is_det_model=True
+            output_axes['det_indices'] = {0: 'batch'}
+            output_names = ['num_dets', 'det_boxes', 'det_scores', 'det_classes', 'det_indices'] 
+            shapes = [ batch_size, 1,  
+                    batch_size,  self.args.topk_all, 4,
+                    batch_size,  self.args.topk_all,  
+                    batch_size,  self.args.topk_all, 
+                    batch_size,  self.args.topk_all]
+        else:
+            is_det_model=False
+            output_axes['det_masks'] = {0: 'batch'}
+            output_names = ['num_dets', 'det_boxes', 'det_scores', 'det_classes', 'det_masks'] 
+            shapes = [ batch_size, 1,  
+                batch_size,  self.args.topk_all, 4,
+                batch_size,  self.args.topk_all,  
+                batch_size,  self.args.topk_all, 
+                batch_size,  self.args.topk_all, self.args.mask_resolution * self.args.mask_resolution]
+        
+        dynamic_axes.update(output_axes)
+    
+        self.model = End2End_TRT(self.model, self.args.class_agnostic, self.args.topk_all, self.args.iou_thres, self.args.conf_thres, self.args.mask_resolution, self.args.pooler_scale, self.args.sampling_ratio, None ,self.args.device, labels, is_det_model )
+
+        torch.onnx.export(self.model.cpu(), 
+                            self.im.cpu() , 
+                            f, 
+                            verbose=False, 
+                            export_params=True,       # store the trained parameter weights inside the model file
+                            opset_version=14, 
+                            do_constant_folding=True, # whether to execute constant folding for optimization
+                            input_names=['images'],
+                            output_names=output_names,
+                            dynamic_axes=dynamic_axes)
+        
+        # Checks
+        model_onnx = onnx.load(f)  # load onnx model
+        onnx.checker.check_model(model_onnx)  # check onnx model
+
+        for k, v in d.items():
+            meta = model_onnx.metadata_props.add()
+            meta.key, meta.value = k, str(v)
+
+        for i in model_onnx.graph.output:
+            for j in i.type.tensor_type.shape.dim:
+                j.dim_param = str(shapes.pop(0))
+
+        # Simplify
+        check_requirements('onnxsim')
+        try:
+            import onnxsim
+            LOGGER.info(f'\n{prefix} Starting to simplify ONNX...')
+            model_onnx, check = onnxsim.simplify(model_onnx)
+            assert check, 'assert check failed'
+        except Exception as e:
+            LOGGER.info(f'\n{prefix} Simplifier failure: {e}')
+            
+        onnx.save(model_onnx,f)
+
+        check_requirements('onnx_graphsurgeon')
+    
+        LOGGER.info(f'\n{prefix} Starting to cleanup ONNX using onnx_graphsurgeon...')
+        try:
+            import onnx_graphsurgeon as gs
+
+            graph = gs.import_onnx(model_onnx)
+            graph = graph.cleanup().toposort()
+            model_onnx = gs.export_onnx(graph)
+        except Exception as e:
+            LOGGER.info(f'\n{prefix} Cleanup failure: {e}')
+        return f, model_onnx
+
 
     @try_export
     def export_openvino(self, prefix=colorstr("OpenVINO:")):
@@ -1208,3 +1319,238 @@ class IOSDetectModel(torch.nn.Module):
         """Normalize predictions of object detection model with input size-dependent factors."""
         xywh, cls = self.model(x)[0].transpose(0, 1).split((4, self.nc), 1)
         return cls, xywh * self.normalize  # confidence (3780, 80), coordinates (3780, 4)
+
+
+class TRT_YOLO_NMS(torch.autograd.Function):
+    '''TensorRT NMS operation'''
+    @staticmethod
+    def forward(
+        ctx,
+        boxes,
+        scores,
+        background_class=-1,
+        box_coding=1,
+        iou_threshold=0.45,
+        max_output_boxes=100,
+        plugin_version="1",
+        score_activation=0,
+        score_threshold=0.25,
+        class_agnostic=0,
+    ):
+
+        batch_size, num_boxes, num_classes = scores.shape
+        num_det = torch.randint(0, max_output_boxes, (batch_size, 1), dtype=torch.int32)
+        det_boxes = torch.randn(batch_size, max_output_boxes, 4)
+        det_scores = torch.randn(batch_size, max_output_boxes)
+        det_classes = torch.randint(0, num_classes, (batch_size, max_output_boxes), dtype=torch.int32)
+        det_indices = torch.randint(0,num_boxes,(batch_size, max_output_boxes), dtype=torch.int32)
+        return num_det, det_boxes, det_scores, det_classes, det_indices
+
+    @staticmethod
+    def symbolic(g,
+                 boxes,
+                 scores,
+                 background_class=-1,
+                 box_coding=1,
+                 iou_threshold=0.45,
+                 max_output_boxes=100,
+                 plugin_version="1",
+                 score_activation=0,
+                 score_threshold=0.25,
+                 class_agnostic=0):
+        out = g.op("TRT::YOLO_NMS_TRT",
+                   boxes,
+                   scores,
+                   background_class_i=background_class,
+                   box_coding_i=box_coding,
+                   iou_threshold_f=iou_threshold,
+                   max_output_boxes_i=max_output_boxes,
+                   plugin_version_s=plugin_version,
+                   score_activation_i=score_activation,
+                   class_agnostic_i=class_agnostic,
+                   score_threshold_f=score_threshold,
+                   outputs=5)
+        nums, boxes, scores, classes, det_indices = out
+        return nums, boxes, scores, classes, det_indices
+
+class TRT_ROIAlign(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        X,
+        rois,
+        batch_indices,
+        coordinate_transformation_mode= 1,
+        mode=1,  # 1- avg pooling  / 0 - max pooling
+        output_height=160,
+        output_width=160,
+        sampling_ratio=0,
+        spatial_scale=0.25,
+    ):
+        device = rois.device
+        dtype = rois.dtype
+        N, C, H, W = X.shape
+        num_rois = rois.shape[0]
+        return torch.randn((num_rois, C, output_height, output_width), device=device, dtype=dtype)
+
+    @staticmethod
+    def symbolic(
+        g,
+        X,
+        rois,
+        batch_indices,
+        coordinate_transformation_mode=1,
+        mode=1,
+        output_height=160,
+        output_width=160,
+        sampling_ratio=0,
+        spatial_scale=0.25,
+    ):
+        return g.op(
+            "TRT::ROIAlign_TRT",
+            X,
+            rois,
+            batch_indices,
+            coordinate_transformation_mode_i=coordinate_transformation_mode,
+            mode_i=mode,
+            output_height_i=output_height,
+            output_width_i=output_width,
+            sampling_ratio_i=sampling_ratio,
+            spatial_scale_f=spatial_scale,
+        )
+    
+class ONNX_YOLO_TRT(torch.nn.Module):
+    '''onnx module with TensorRT NMS operation.'''
+    def __init__(self, class_agnostic=False, max_obj=100, iou_thres=0.45, score_thres=0.25, max_wh=None ,device=None, n_classes=80):
+        super().__init__()
+        assert max_wh is None
+        self.device = device if device else torch.device('cpu')
+        self.class_agnostic = 1 if class_agnostic else 0
+        self.background_class = -1,
+        self.box_coding = 1,
+        self.iou_threshold = iou_thres
+        self.max_obj = max_obj
+        self.plugin_version = '1'
+        self.score_activation = 0
+        self.score_threshold = score_thres
+        self.n_classes=n_classes
+        
+
+    def forward(self, x):
+        x = x.permute(0, 2, 1)
+        bboxes_x = x[..., 0:1]
+        bboxes_y = x[..., 1:2]
+        bboxes_w = x[..., 2:3]
+        bboxes_h = x[..., 3:4]
+        bboxes = torch.cat([bboxes_x, bboxes_y, bboxes_w, bboxes_h], dim = -1)
+        bboxes = bboxes.unsqueeze(2) # [n_batch, n_bboxes, 4] -> [n_batch, n_bboxes, 1, 4]
+        obj_conf = x[..., 4:]
+        scores = obj_conf
+        num_det, det_boxes, det_scores, det_classes, det_indices = TRT_YOLO_NMS.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                    self.iou_threshold, self.max_obj,
+                                                                    self.plugin_version, self.score_activation,
+                                                                    self.score_threshold, self.class_agnostic)
+        return num_det, det_boxes, det_scores, det_classes, det_indices
+    
+class End2End_TRT(torch.nn.Module):
+    '''export onnx or tensorrt model with NMS operation.'''
+    def __init__(self, model, class_agnostic=False, max_obj=100, iou_thres=0.45, score_thres=0.25, mask_resolution=56, pooler_scale=0.25, sampling_ratio=0, max_wh=None, device=None, n_classes=80, is_det_model=True):
+        super().__init__()
+        device = device if device else torch.device('cpu')
+        assert isinstance(max_wh,(int)) or max_wh is None
+        self.model = model.to(device)
+        self.model.model[-1].end2end = True
+        if is_det_model:
+            self.patch_model = ONNX_YOLO_TRT 
+            self.end2end = self.patch_model(class_agnostic, max_obj, iou_thres, score_thres, max_wh, device, n_classes)
+        else:
+            self.patch_model = ONNX_YOLO_MASK_TRT 
+            self.end2end = self.patch_model(class_agnostic, max_obj, iou_thres, score_thres, mask_resolution, pooler_scale, sampling_ratio, max_wh, device, n_classes) 
+        self.end2end.eval()
+
+    def forward(self, x):
+        x = self.model(x)
+        x = self.end2end(x)
+        return x
+    
+
+class ONNX_YOLO_MASK_TRT(torch.nn.Module):
+    """onnx module with ONNX-TensorRT NMS/ROIAlign operation."""
+    def __init__(
+        self,
+        class_agnostic=False,
+        max_obj=100,
+        iou_thres=0.45,
+        score_thres=0.25,
+        mask_resolution=160,
+        pooler_scale=0.25,
+        sampling_ratio=0,
+        max_wh=None,
+        device=None,
+        n_classes=80
+    ):
+        super().__init__()
+        assert isinstance(max_wh,(int)) or max_wh is None
+        self.device = device if device else torch.device('cpu')
+        self.class_agnostic = 1 if class_agnostic else 0
+        self.max_obj = max_obj
+        self.background_class = -1,
+        self.box_coding = 1,
+        self.iou_threshold = iou_thres
+        self.max_obj = max_obj
+        self.plugin_version = '1'
+        self.score_activation = 0
+        self.score_threshold = score_thres
+        self.n_classes=n_classes
+        self.mask_resolution = mask_resolution
+        self.pooler_scale = pooler_scale
+        self.sampling_ratio = sampling_ratio
+       
+    def forward(self, x):
+        det=x[0]
+        proto=x[1]
+        det = det.permute(0, 2, 1)
+
+        bboxes_x = det[..., 0:1]
+        bboxes_y = det[..., 1:2]
+        bboxes_w = det[..., 2:3]
+        bboxes_h = det[..., 3:4]
+        bboxes = torch.cat([bboxes_x, bboxes_y, bboxes_w, bboxes_h], dim = -1)
+        bboxes = bboxes.unsqueeze(2) # [n_batch, n_bboxes, 4] -> [n_batch, n_bboxes, 1, 4]
+        scores = det[..., 4: 4 + self.n_classes]
+       
+        batch_size, nm, proto_h, proto_w = proto.shape
+        total_object = batch_size * self.max_obj
+        masks = det[..., 4 + self.n_classes : 4 + self.n_classes + nm]
+        num_det, det_boxes, det_scores, det_classes, det_indices = TRT_YOLO_NMS.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                    self.iou_threshold, self.max_obj,
+                                                                    self.plugin_version, self.score_activation,
+                                                                    self.score_threshold,self.class_agnostic)
+        
+        batch_indices = torch.ones_like(det_indices) * torch.arange(batch_size, device=self.device, dtype=torch.int32).unsqueeze(1)
+        batch_indices = batch_indices.view(total_object).to(torch.long)
+        det_indices = det_indices.view(total_object).to(torch.long)
+        det_masks = masks[batch_indices, det_indices]
+
+
+        pooled_proto = TRT_ROIAlign.apply(  proto,
+                                            det_boxes.view(total_object, 4),
+                                            batch_indices,
+                                            1,
+                                            1,
+                                            self.mask_resolution,
+                                            self.mask_resolution,
+                                            self.sampling_ratio,
+                                            self.pooler_scale
+                                        )
+        pooled_proto = pooled_proto.view(
+            total_object, nm, self.mask_resolution * self.mask_resolution,
+        )
+
+        det_masks = (
+            torch.matmul(det_masks.unsqueeze(dim=1), pooled_proto)
+            .sigmoid()
+            .view(batch_size, self.max_obj, self.mask_resolution * self.mask_resolution)
+        )
+
+        return num_det, det_boxes, det_scores, det_classes, det_masks
