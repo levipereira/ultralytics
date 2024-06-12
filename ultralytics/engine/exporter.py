@@ -472,7 +472,7 @@ class Exporter:
             'names': self.model.names,
             'model type' : 'Segmentation' if isinstance(self.model, SegmentationModel) else 'Detection',
             'TRT Compatibility': '8.6 or above',
-            'TRT Plugins': 'YoloNMS, ROIAlign' if isinstance(self.model, SegmentationModel) else 'YoloNMS'  
+            'TRT Plugins': 'TRT_EfficientNMSX, ROIAlign' if isinstance(self.model, SegmentationModel) else 'TRT_EfficientNMS'  
             }
         
 
@@ -488,12 +488,11 @@ class Exporter:
         if not isinstance(self.model, SegmentationModel):
             is_det_model=True
             output_axes['det_indices'] = {0: 'batch'}
-            output_names = ['num_dets', 'det_boxes', 'det_scores', 'det_classes', 'det_indices'] 
+            output_names = ['num_dets', 'det_boxes', 'det_scores', 'det_classes'] 
             shapes = [ batch_size, 1,  
                     batch_size,  self.args.topk_all, 4,
                     batch_size,  self.args.topk_all,  
-                    batch_size,  self.args.topk_all, 
-                    batch_size,  self.args.topk_all]
+                    batch_size,  self.args.topk_all ]
         else:
             is_det_model=False
             output_axes['det_masks'] = {0: 'batch'}
