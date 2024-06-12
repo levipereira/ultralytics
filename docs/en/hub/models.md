@@ -1,7 +1,7 @@
 ---
 comments: true
-description: Streamline your AI model training on custom datasets with Ultralytics HUB. Efficient, user-friendly, and powerful.
-keywords: Ultralytics HUB, AI model training, custom datasets, YOLOv8, real-time updates, model deployment, Ultralytics
+description: Explore Ultralytics HUB for easy training, analysis, preview, deployment and sharing of custom vision AI models using YOLOv8. Start training today!.
+keywords: Ultralytics HUB, YOLOv8, custom AI models, model training, model deployment, model analysis, vision AI
 ---
 
 # Ultralytics HUB Models
@@ -76,6 +76,17 @@ By default, your model will use a pre-trained model (trained on the [COCO](https
 
     You can easily change the most common model configuration options (such as the number of epochs) but you can also use the **Custom** option to access all [Train Settings](https://docs.ultralytics.com/modes/train/#train-settings) relevant to [Ultralytics HUB](https://bit.ly/ultralytics_hub).
 
+<p align="center">
+  <br>
+  <iframe loading="lazy" width="720" height="405" src="https://www.youtube.com/embed/Unt4Lfid7aY"
+    title="YouTube video player" frameborder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowfullscreen>
+  </iframe>
+  <br>
+  <strong>Watch:</strong> How to Configure Ultralytics YOLOv8 Training Parameters in Ultralytics HUB
+</p>
+
 Alternatively, you start training from one of your previously trained models by clicking on the **Custom** tab.
 
 ![Ultralytics HUB screenshot of the Train Model dialog with an arrow pointing to the Custom tab](https://raw.githubusercontent.com/ultralytics/assets/main/docs/hub/models/hub_train_model_6.jpg)
@@ -129,6 +140,16 @@ When the training starts, you can click **Done** and monitor the training progre
     ![Ultralytics HUB screenshot of the Model page with an arrow pointing to the Resume Training card](https://raw.githubusercontent.com/ultralytics/assets/main/docs/hub/models/hub_train_model_11.jpg)
 
 #### c. Bring your own agent
+
+<p align="center">
+  <iframe loading="lazy" width="720" height="405" src="https://www.youtube.com/embed/S_J-Dyw15i0"
+    title="YouTube video player" frameborder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowfullscreen>
+  </iframe>
+  <br>
+  <strong>Watch:</strong> Bring your Own Agent model training using Ultralytics HUB
+</p>
 
 To start training your model using your own agent, follow the instructions shown in the [Ultralytics HUB](https://bit.ly/ultralytics_hub) **Train Model** dialog.
 
