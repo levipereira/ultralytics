@@ -471,7 +471,7 @@ class Exporter:
             'stride': int(max(self.model.stride)),
             'names': self.model.names,
             'model type' : 'Segmentation' if isinstance(self.model, SegmentationModel) else 'Detection',
-            'TRT Compatibility': '8.6 or above',
+            'TRT Compatibility': '8.6 or above' if self.args.class_agnostic else '8.5 or above',
             'TRT Plugins': 'TRT_EfficientNMSX, ROIAlign' if isinstance(self.model, SegmentationModel) else 'TRT_EfficientNMS'  
             }
         
@@ -1337,6 +1337,57 @@ class IOSDetectModel(torch.nn.Module):
         xywh, cls = self.model(x)[0].transpose(0, 1).split((4, self.nc), 1)
         return cls, xywh * self.normalize  # confidence (3780, 80), coordinates (3780, 4)
 
+## TensorRT 8.5 compatible
+class TRT_EfficientNMS_85(torch.autograd.Function):
+    '''TensorRT NMS operation'''
+    @staticmethod
+    def forward(
+        ctx,
+        boxes,
+        scores,
+        background_class=-1,
+        box_coding=1,
+        iou_threshold=0.45,
+        max_output_boxes=100,
+        plugin_version="1",
+        score_activation=0,
+        score_threshold=0.25
+    ):
+
+        batch_size, num_boxes, num_classes = scores.shape
+        num_det = torch.randint(0, max_output_boxes, (batch_size, 1), dtype=torch.int32)
+        det_boxes = torch.randn(batch_size, max_output_boxes, 4)
+        det_scores = torch.randn(batch_size, max_output_boxes)
+        det_classes = torch.randint(0, num_classes, (batch_size, max_output_boxes), dtype=torch.int32)
+        return num_det, det_boxes, det_scores, det_classes
+
+    @staticmethod
+    def symbolic(g,
+                 boxes,
+                 scores,
+                 background_class=-1,
+                 box_coding=1,
+                 iou_threshold=0.45,
+                 max_output_boxes=100,
+                 plugin_version="1",
+                 score_activation=0,
+                 score_threshold=0.25
+                 ):
+        out = g.op("TRT::EfficientNMS_TRT",
+                   boxes,
+                   scores,
+                   background_class_i=background_class,
+                   box_coding_i=box_coding,
+                   iou_threshold_f=iou_threshold,
+                   max_output_boxes_i=max_output_boxes,
+                   plugin_version_s=plugin_version,
+                   score_activation_i=score_activation,
+                   score_threshold_f=score_threshold,
+                   outputs=4)
+        nums, boxes, scores, classes = out
+        return nums, boxes, scores, classes
+    
+
 
 class TRT_EfficientNMS(torch.autograd.Function):
     '''TensorRT NMS operation'''
@@ -1388,7 +1439,59 @@ class TRT_EfficientNMS(torch.autograd.Function):
                    outputs=4)
         nums, boxes, scores, classes = out
         return nums, boxes, scores, classes
+
+
+class TRT_EfficientNMSX_85(torch.autograd.Function):
+    '''TensorRT NMS operation'''
+    @staticmethod
+    def forward(
+        ctx,
+        boxes,
+        scores,
+        background_class=-1,
+        box_coding=1,
+        iou_threshold=0.45,
+        max_output_boxes=100,
+        plugin_version="1",
+        score_activation=0,
+        score_threshold=0.25,
+    ):
+
+        batch_size, num_boxes, num_classes = scores.shape
+        num_det = torch.randint(0, max_output_boxes, (batch_size, 1), dtype=torch.int32)
+        det_boxes = torch.randn(batch_size, max_output_boxes, 4)
+        det_scores = torch.randn(batch_size, max_output_boxes)
+        det_classes = torch.randint(0, num_classes, (batch_size, max_output_boxes), dtype=torch.int32)
+        det_indices = torch.randint(0,num_boxes,(batch_size, max_output_boxes), dtype=torch.int32)
+        return num_det, det_boxes, det_scores, det_classes, det_indices
+
+    @staticmethod
+    def symbolic(g,
+                 boxes,
+                 scores,
+                 background_class=-1,
+                 box_coding=1,
+                 iou_threshold=0.45,
+                 max_output_boxes=100,
+                 plugin_version="1",
+                 score_activation=0,
+                 score_threshold=0.25
+                 ):
+        out = g.op("TRT::EfficientNMSX_TRT",
+                   boxes,
+                   scores,
+                   background_class_i=background_class,
+                   box_coding_i=box_coding,
+                   iou_threshold_f=iou_threshold,
+                   max_output_boxes_i=max_output_boxes,
+                   plugin_version_s=plugin_version,
+                   score_activation_i=score_activation,
+                   score_threshold_f=score_threshold,
+                   outputs=5)
+        nums, boxes, scores, classes, det_indices = out
+        return nums, boxes, scores, classes, det_indices
     
+
 class TRT_EfficientNMSX(torch.autograd.Function):
     '''TensorRT NMS operation'''
     @staticmethod
@@ -1517,10 +1620,16 @@ class ONNX_EfficientNMS_TRT(torch.nn.Module):
         bboxes = bboxes.unsqueeze(2) # [n_batch, n_bboxes, 4] -> [n_batch, n_bboxes, 1, 4]
         obj_conf = x[..., 4:]
         scores = obj_conf
-        num_det, det_boxes, det_scores, det_classes = TRT_EfficientNMS.apply(bboxes, scores, self.background_class, self.box_coding,
-                                                                    self.iou_threshold, self.max_obj,
-                                                                    self.plugin_version, self.score_activation,
-                                                                    self.score_threshold, self.class_agnostic)
+        if self.class_agnostic == 1:
+            num_det, det_boxes, det_scores, det_classes = TRT_EfficientNMS.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                        self.iou_threshold, self.max_obj,
+                                                                        self.plugin_version, self.score_activation,
+                                                                        self.score_threshold, self.class_agnostic)
+        else:
+            num_det, det_boxes, det_scores, det_classes = TRT_EfficientNMS_85.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                        self.iou_threshold, self.max_obj,
+                                                                        self.plugin_version, self.score_activation,
+                                                                        self.score_threshold)
         return num_det, det_boxes, det_scores, det_classes
 
 
@@ -1553,10 +1662,16 @@ class ONNX_EfficientNMSX_TRT(torch.nn.Module):
         bboxes = bboxes.unsqueeze(2) # [n_batch, n_bboxes, 4] -> [n_batch, n_bboxes, 1, 4]
         obj_conf = x[..., 4:]
         scores = obj_conf
-        num_det, det_boxes, det_scores, det_classes, det_indices = TRT_EfficientNMSX.apply(bboxes, scores, self.background_class, self.box_coding,
-                                                                    self.iou_threshold, self.max_obj,
-                                                                    self.plugin_version, self.score_activation,
-                                                                    self.score_threshold, self.class_agnostic)
+        if self.class_agnostic == 1:
+            num_det, det_boxes, det_scores, det_classes, det_indices = TRT_EfficientNMSX.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                        self.iou_threshold, self.max_obj,
+                                                                        self.plugin_version, self.score_activation,
+                                                                        self.score_threshold, self.class_agnostic)
+        else:
+            num_det, det_boxes, det_scores, det_classes, det_indices = TRT_EfficientNMSX_85.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                        self.iou_threshold, self.max_obj,
+                                                                        self.plugin_version, self.score_activation,
+                                                                        self.score_threshold)
         return num_det, det_boxes, det_scores, det_classes, det_indices
 
 
@@ -1631,10 +1746,16 @@ class ONNX_End2End_MASK_TRT(torch.nn.Module):
         batch_size, nm, proto_h, proto_w = proto.shape
         total_object = batch_size * self.max_obj
         masks = det[..., 4 + self.n_classes : 4 + self.n_classes + nm]
-        num_det, det_boxes, det_scores, det_classes, det_indices = TRT_EfficientNMSX.apply(bboxes, scores, self.background_class, self.box_coding,
-                                                                    self.iou_threshold, self.max_obj,
-                                                                    self.plugin_version, self.score_activation,
-                                                                    self.score_threshold,self.class_agnostic)
+        if self.class_agnostic == 1:
+            num_det, det_boxes, det_scores, det_classes, det_indices = TRT_EfficientNMSX.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                        self.iou_threshold, self.max_obj,
+                                                                        self.plugin_version, self.score_activation,
+                                                                        self.score_threshold,self.class_agnostic)
+        else:
+            num_det, det_boxes, det_scores, det_classes, det_indices = TRT_EfficientNMSX_85.apply(bboxes, scores, self.background_class, self.box_coding,
+                                                                        self.iou_threshold, self.max_obj,
+                                                                        self.plugin_version, self.score_activation,
+                                                                        self.score_threshold)
         
         batch_indices = torch.ones_like(det_indices) * torch.arange(batch_size, device=self.device, dtype=torch.int32).unsqueeze(1)
         batch_indices = batch_indices.view(total_object).to(torch.long)
