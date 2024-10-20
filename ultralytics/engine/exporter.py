@@ -467,6 +467,17 @@ class Exporter:
         import onnx  # noqa
         labels = len(self.model.names)
         is_det_model=True
+        v10detect=False
+        for k, m in self.model.named_modules():
+            if isinstance(m, v10Detect):
+                v10detect=True
+
+        if len(self.model.names.keys()) > 0:
+            label_file = os.path.splitext(self.file)[0] + "-trt.txt"
+            with open(label_file, 'w') as f_trt:
+                for name in self.model.names.values():
+                    f_trt.write(name + '\n')
+            LOGGER.info(f"{prefix} Successfully generated the label file: '{label_file}'.")
 
         opset_version = self.args.opset or get_latest_opset()
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
@@ -488,15 +499,13 @@ class Exporter:
             'stride': int(max(self.model.stride)),
             'names': self.model.names,
             'model type' : 'Segmentation' if isinstance(self.model, SegmentationModel) else 'Detection',
-            'train input shape' :  f'{tuple(self.im.shape[1:])} - CHW',
-            'TRT Compatibility': '8.6 or above' if self.args.class_agnostic else '8.5 or above',
-            'TRT Plugins': 'TRT_EfficientNMSX, ROIAlign' if isinstance(self.model, SegmentationModel) else 'TRT_EfficientNMS'  
+            'train input' :  f'{tuple(self.im.shape[1:])} - CHW',
+            'TRT Compatibility': '8.6 or above' if self.args.class_agnostic else '8.5 or above'
             }
+        if not v10detect:  
+            d['TRT Plugins'] = 'TRT_EfficientNMSX, ROIAlign' if isinstance(self.model, SegmentationModel) else 'TRT_EfficientNMS'
         
-        v10detect=False
-        for k, m in self.model.named_modules():
-                if isinstance(m, v10Detect):
-                    v10detect=True
+        
 
         if not isinstance(self.model, SegmentationModel):
             is_det_model=True
