@@ -65,14 +65,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
-
+import torch.nn as nn
 
 from ultralytics.cfg import TASK2DATA, get_cfg
 from ultralytics.data import build_dataloader
 from ultralytics.data.dataset import YOLODataset
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset
 from ultralytics.nn.autobackend import check_class_names, default_class_names
-from ultralytics.nn.modules import C2f, Detect, RTDETRDecoder
+from ultralytics.nn.modules import C2f, Detect, RTDETRDecoder, v10Detect
 from ultralytics.nn.tasks import DetectionModel, SegmentationModel, WorldModel
 from ultralytics.utils import (
     ARM64,
@@ -95,7 +95,6 @@ from ultralytics.utils.downloads import attempt_download_asset, get_github_asset
 from ultralytics.utils.files import file_size, spaces_in_path
 from ultralytics.utils.ops import Profile
 from ultralytics.utils.torch_utils import TORCH_1_13, get_latest_opset, select_device, smart_inference_mode
-
 
 def export_formats():
     """Ultralytics YOLO export formats."""
@@ -460,21 +459,31 @@ class Exporter:
     def export_onnx_trt(self, prefix=colorstr("ONNX:")):
         """YOLOv8 ONNX export."""
         requirements = ["onnx>=1.12.0"]
-        if not self.args.trt_plugin:
-            raise RuntimeError(f"\n{prefix} You must use trt_plugin=True (Supported only to YOLOV8).")
+     
         if self.args.simplify:
             requirements += ["onnxsim>=0.4.33", "onnxruntime-gpu" if torch.cuda.is_available() else "onnxruntime"]
-            if ARM64:
-                check_requirements("cmake")  # 'cmake' is needed to build onnxsim on aarch64
         check_requirements(requirements)
+
         import onnx  # noqa
         labels = len(self.model.names)
         is_det_model=True
+
         opset_version = self.args.opset or get_latest_opset()
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
+
         f = os.path.splitext(self.file)[0] + "-trt.onnx"
+
         batch_size = 'batch'
         dynamic = self.args.dynamic
+        dynamic_axes = {'images': {0 : 'batch', 2: 'height', 3:'width'}, } # variable length axes
+        output_axes = {
+                    'num_dets': {0: 'batch'},
+                    'det_boxes': {0: 'batch'},
+                    'det_scores': {0: 'batch'},
+                    'det_classes': {0: 'batch'},
+                 }
+
+
         d = {
             'stride': int(max(self.model.stride)),
             'names': self.model.names,
@@ -484,24 +493,19 @@ class Exporter:
             'TRT Plugins': 'TRT_EfficientNMSX, ROIAlign' if isinstance(self.model, SegmentationModel) else 'TRT_EfficientNMS'  
             }
         
+        v10detect=False
+        for k, m in self.model.named_modules():
+                if isinstance(m, v10Detect):
+                    v10detect=True
 
-        dynamic_axes = {'images': {0 : 'batch', 2: 'height', 3:'width'}, } # variable length axes
-
-        output_axes = {
-                    'num_dets': {0: 'batch'},
-                    'det_boxes': {0: 'batch'},
-                    'det_scores': {0: 'batch'},
-                    'det_classes': {0: 'batch'},
-                 }
-    
         if not isinstance(self.model, SegmentationModel):
             is_det_model=True
-            output_axes['det_indices'] = {0: 'batch'}
             output_names = ['num_dets', 'det_boxes', 'det_scores', 'det_classes'] 
             shapes = [ batch_size, 1,  
                     batch_size,  self.args.topk_all, 4,
                     batch_size,  self.args.topk_all,  
                     batch_size,  self.args.topk_all ]
+            
         else:
             is_det_model=False
             output_axes['det_masks'] = {0: 'batch'}
@@ -514,15 +518,27 @@ class Exporter:
         
         dynamic_axes.update(output_axes)
         
-        self.model = End2End_TRT(self.model, self.args.class_agnostic, self.args.topk_all, self.args.iou_thres, self.args.conf_thres, self.args.mask_resolution, self.args.pooler_scale, self.args.sampling_ratio, None ,self.args.device, labels, is_det_model )
-        
+        if v10detect:
+            for p in self.model.parameters():
+                p.requires_grad = False
+            self.model.eval()
+            self.model.float()
+            self.model.fuse()
+            for k, m in self.model.named_modules():
+                if isinstance(m, v10Detect):
+                    m.max_det = self.args.topk_all
+           
+        if v10detect:
+            self.model = nn.Sequential(self.model, End2End_TRT(self.model, self.args.class_agnostic, self.args.topk_all, self.args.iou_thres, self.args.conf_thres, self.args.mask_resolution, self.args.pooler_scale, self.args.sampling_ratio, None ,self.args.device, labels, is_det_model, v10detect ))
+        else:
+             self.model = End2End_TRT(self.model, self.args.class_agnostic, self.args.topk_all, self.args.iou_thres, self.args.conf_thres, self.args.mask_resolution, self.args.pooler_scale, self.args.sampling_ratio, None ,self.args.device, labels, is_det_model, v10detect )
 
         torch.onnx.export( self.model.cpu() if dynamic else self.model,  # dynamic=True only compatible with cpu
                             self.im.cpu() if dynamic else self.im,
                             f, 
                             verbose=False, 
                             export_params=True,       # store the trained parameter weights inside the model file
-                            opset_version=14, 
+                            opset_version=opset_version, 
                             do_constant_folding=True, # whether to execute constant folding for optimization
                             input_names=['images'],
                             output_names=output_names,
@@ -537,8 +553,8 @@ class Exporter:
             meta.key, meta.value = k, str(v)
 
         for i in model_onnx.graph.output:
-            for j in i.type.tensor_type.shape.dim:
-                j.dim_param = str(shapes.pop(0))
+           for j in i.type.tensor_type.shape.dim:
+               j.dim_param = str(shapes.pop(0))
 
         # Simplify
         check_requirements('onnxsim')
@@ -1666,25 +1682,39 @@ class ONNX_EfficientNMSX_TRT(torch.nn.Module):
 
 class End2End_TRT(torch.nn.Module):
     '''export onnx or tensorrt model with NMS operation.'''
-    def __init__(self, model, class_agnostic=False, max_obj=100, iou_thres=0.45, score_thres=0.25, mask_resolution=56, pooler_scale=0.25, sampling_ratio=0, max_wh=None, device=None, n_classes=80, is_det_model=True):
+    def __init__(self, model, class_agnostic=False, max_obj=100, iou_thres=0.45, score_thres=0.25, mask_resolution=56, pooler_scale=0.25, sampling_ratio=0, max_wh=None, device=None, n_classes=80, is_det_model=True, v10detect=False):
         super().__init__()
         device = device if device else torch.device('cpu')
         assert isinstance(max_wh,(int)) or max_wh is None
         self.model = model.to(device)
-        self.model.model[-1].end2end = False
-        if is_det_model:
+        self.v10detect = v10detect
+
+        if is_det_model and not self.v10detect:
+            self.model.model[-1].end2end = False
             self.patch_model = ONNX_EfficientNMS_TRT 
             self.end2end = self.patch_model(class_agnostic, max_obj, iou_thres, score_thres, max_wh, device, n_classes)
-        else:
+            self.end2end.eval()
+        elif not is_det_model and not self.v10detect:
+            self.model.model[-1].end2end = False
             self.patch_model = ONNX_End2End_MASK_TRT 
             self.end2end = self.patch_model(class_agnostic, max_obj, iou_thres, score_thres, mask_resolution, pooler_scale, sampling_ratio, max_wh, device, n_classes) 
-        self.end2end.eval()
+            self.end2end.eval()  
+        elif self.v10detect:
+            self.model.model[-1].end2end = True     
 
     def forward(self, x):
-        x = self.model(x)
-        x = self.end2end(x)
-        return x
-    
+        if not self.v10detect:
+            # For YOLOv8, use the end2end process
+            x = self.model(x)
+            x = self.end2end(x)
+            return x
+        else:
+            # For YOLOv10 / YOLO11, manually handle the detection outputs
+            det_boxes = x[:, :, :4]
+            det_scores = x[:, :, 4]
+            det_classes = x[:, :, 5].int()
+            num_dets = (x[:, :, 4] > 0.0).sum(dim=1, keepdim=True).int()
+            return num_dets, det_boxes, det_scores, det_classes
 
 class ONNX_End2End_MASK_TRT(torch.nn.Module):
     """onnx module with ONNX-TensorRT NMS/ROIAlign operation."""
