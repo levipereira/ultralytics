@@ -15,9 +15,12 @@ img_height = 640
 
 
 class LetterBox:
+    """Resizes and reshapes images while maintaining aspect ratio by adding padding, suitable for YOLO models."""
+
     def __init__(
         self, new_shape=(img_width, img_height), auto=False, scaleFill=False, scaleup=True, center=True, stride=32
     ):
+        """Initializes LetterBox with parameters for reshaping and transforming image while maintaining aspect ratio."""
         self.new_shape = new_shape
         self.auto = auto
         self.scaleFill = scaleFill
@@ -27,7 +30,6 @@ class LetterBox:
 
     def __call__(self, labels=None, image=None):
         """Return updated labels and image with added border."""
-
         if labels is None:
             labels = {}
         img = labels.get("img") if image is None else image
@@ -76,7 +78,6 @@ class LetterBox:
 
     def _update_labels(self, labels, ratio, padw, padh):
         """Update labels."""
-
         labels["instances"].convert_bbox(format="xyxy")
         labels["instances"].denormalize(*labels["img"].shape[:2][::-1])
         labels["instances"].scale(*ratio)
@@ -85,6 +86,8 @@ class LetterBox:
 
 
 class Yolov8TFLite:
+    """Class for performing object detection using YOLOv8 model converted to TensorFlow Lite format."""
+
     def __init__(self, tflite_model, input_image, confidence_thres, iou_thres):
         """
         Initializes an instance of the Yolov8TFLite class.
@@ -95,7 +98,6 @@ class Yolov8TFLite:
             confidence_thres: Confidence threshold for filtering detections.
             iou_thres: IoU (Intersection over Union) threshold for non-maximum suppression.
         """
-
         self.tflite_model = tflite_model
         self.input_image = input_image
         self.confidence_thres = confidence_thres
@@ -120,7 +122,6 @@ class Yolov8TFLite:
         Returns:
             None
         """
-
         # Extract the coordinates of the bounding box
         x1, y1, w, h = box
 
@@ -159,7 +160,6 @@ class Yolov8TFLite:
         Returns:
             image_data: Preprocessed image data ready for inference.
         """
-
         # Read the input image using OpenCV
         self.img = cv2.imread(self.input_image)
 
@@ -188,39 +188,48 @@ class Yolov8TFLite:
         Returns:
             numpy.ndarray: The input image with detections drawn on it.
         """
+        # Transpose predictions outside the loop
+        output = [np.transpose(pred) for pred in output]
 
         boxes = []
         scores = []
         class_ids = []
-        for pred in output:
-            pred = np.transpose(pred)
-            for box in pred:
-                x, y, w, h = box[:4]
-                x1 = x - w / 2
-                y1 = y - h / 2
-                boxes.append([x1, y1, w, h])
-                idx = np.argmax(box[4:])
-                scores.append(box[idx + 4])
-                class_ids.append(idx)
 
+        # Vectorize extraction of bounding boxes, scores, and class IDs
+        for pred in output:
+            x, y, w, h = pred[:, 0], pred[:, 1], pred[:, 2], pred[:, 3]
+            x1 = x - w / 2
+            y1 = y - h / 2
+            boxes.extend(np.column_stack([x1, y1, w, h]))
+
+            # Argmax and score extraction for all predictions at once
+            idx = np.argmax(pred[:, 4:], axis=1)
+            scores.extend(pred[np.arange(pred.shape[0]), idx + 4])
+            class_ids.extend(idx)
+
+        # Precompute gain and pad once
+        img_height, img_width = input_image.shape[:2]
+        gain = min(img_width / self.img_width, img_height / self.img_height)
+        pad = (
+            round((img_width - self.img_width * gain) / 2 - 0.1),
+            round((img_height - self.img_height * gain) / 2 - 0.1),
+        )
+
+        # Non-Maximum Suppression (NMS) in one go
         indices = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_thres, self.iou_thres)
 
-        for i in indices:
-            # Get the box, score, and class ID corresponding to the index
+        # Process selected indices
+        for i in indices.flatten():
             box = boxes[i]
-            gain = min(img_width / self.img_width, img_height / self.img_height)
-            pad = (
-                round((img_width - self.img_width * gain) / 2 - 0.1),
-                round((img_height - self.img_height * gain) / 2 - 0.1),
-            )
             box[0] = (box[0] - pad[0]) / gain
             box[1] = (box[1] - pad[1]) / gain
             box[2] = box[2] / gain
             box[3] = box[3] / gain
+
             score = scores[i]
             class_id = class_ids[i]
+
             if score > 0.25:
-                print(box, score, class_id)
                 # Draw the detection on the input image
                 self.draw_detections(input_image, box, score, class_id)
 
@@ -233,7 +242,6 @@ class Yolov8TFLite:
         Returns:
             output_img: The output image with drawn detections.
         """
-
         # Create an interpreter for the TFLite model
         interpreter = tflite.Interpreter(model_path=self.tflite_model)
         self.model = interpreter

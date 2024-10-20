@@ -4,8 +4,23 @@ import requests
 
 from ultralytics.data.utils import HUBDatasetStats
 from ultralytics.hub.auth import Auth
-from ultralytics.hub.utils import HUB_API_ROOT, HUB_WEB_ROOT, PREFIX
+from ultralytics.hub.session import HUBTrainingSession
+from ultralytics.hub.utils import HUB_API_ROOT, HUB_WEB_ROOT, PREFIX, events
 from ultralytics.utils import LOGGER, SETTINGS, checks
+
+__all__ = (
+    "PREFIX",
+    "HUB_WEB_ROOT",
+    "HUBTrainingSession",
+    "login",
+    "logout",
+    "reset_model",
+    "export_fmts_hub",
+    "export_model",
+    "get_export",
+    "check_dataset",
+    "events",
+)
 
 
 def login(api_key: str = None, save=True) -> bool:
@@ -23,7 +38,7 @@ def login(api_key: str = None, save=True) -> bool:
     Returns:
         (bool): True if authentication is successful, False otherwise.
     """
-    checks.check_requirements("hub-sdk>=0.0.6")
+    checks.check_requirements("hub-sdk>=0.0.12")
     from hub_sdk import HUBClient
 
     api_key_url = f"{HUB_WEB_ROOT}/settings?tab=api+keys"  # set the redirect URL
@@ -48,13 +63,13 @@ def login(api_key: str = None, save=True) -> bool:
         return True
     else:
         # Failed to authenticate with HUB
-        LOGGER.info(f"{PREFIX}Get API key from {api_key_url} and then run 'yolo hub login API_KEY'")
+        LOGGER.info(f"{PREFIX}Get API key from {api_key_url} and then run 'yolo login API_KEY'")
         return False
 
 
 def logout():
     """
-    Log out of Ultralytics HUB by removing the API key from the settings file. To log in again, use 'yolo hub login'.
+    Log out of Ultralytics HUB by removing the API key from the settings file. To log in again, use 'yolo login'.
 
     Example:
         ```python
@@ -64,8 +79,7 @@ def logout():
         ```
     """
     SETTINGS["api_key"] = ""
-    SETTINGS.save()
-    LOGGER.info(f"{PREFIX}logged out ✅. To log in again, use 'yolo hub login'.")
+    LOGGER.info(f"{PREFIX}logged out ✅. To log in again, use 'yolo login'.")
 
 
 def reset_model(model_id=""):
@@ -121,11 +135,11 @@ def check_dataset(path: str, task: str) -> None:
         ```python
         from ultralytics.hub import check_dataset
 
-        check_dataset('path/to/coco8.zip', task='detect')  # detect dataset
-        check_dataset('path/to/coco8-seg.zip', task='segment')  # segment dataset
-        check_dataset('path/to/coco8-pose.zip', task='pose')  # pose dataset
-        check_dataset('path/to/dota8.zip', task='obb')  # OBB dataset
-        check_dataset('path/to/imagenet10.zip', task='classify')  # classification dataset
+        check_dataset("path/to/coco8.zip", task="detect")  # detect dataset
+        check_dataset("path/to/coco8-seg.zip", task="segment")  # segment dataset
+        check_dataset("path/to/coco8-pose.zip", task="pose")  # pose dataset
+        check_dataset("path/to/dota8.zip", task="obb")  # OBB dataset
+        check_dataset("path/to/imagenet10.zip", task="classify")  # classification dataset
         ```
     """
     HUBDatasetStats(path=path, task=task).get_json()
