@@ -1,3 +1,70 @@
+# YOLO Model Export to ONNX for NVIDIA DeepStream and Triton Server
+
+This repository contains the implementation for exporting YOLOv8, YOLOv10, and YOLO11 models to the ONNX format with End-to-End functionality for detection and segmentation models. 
+
+I developed this project to assist the community in integrating these models with the NVIDIA DeepStream SDK and Triton Server.
+
+## Features
+
+- Support for EfficientNMS/EfficientNMSX plugins from TensorRT.
+- Option to use NMS-Free (available in YOLOv10 models).
+
+## Installation
+
+To install this repository, it is highly recommended to create a Virtual Environment. You can follow the steps below:
+
+```bash
+git clone https://github.com/levipereira/ultralytics
+
+# Navigate to the cloned directory
+cd ultralytics
+
+# Install the package   
+pip install -e .
+```
+
+## Usage
+You can utilize the onnx_trt.py script with the following options:
+
+## Script Arguments
+
+The `onnx_trt.py` script accepts several command-line arguments to customize its behavior. Below is a list of available options along with their default values and descriptions:
+
+ **Note**: For models with NMS-Free functionality, only `topk_all` is used.
+
+- `--topk_all`: *int*  
+  **Default**: `100`  
+  Specifies the number of top K detections to consider for all classes. This parameter helps in filtering the most relevant detections.
+
+- `--iou_thres`: *float*  
+  **Default**: `0.45`  
+  Sets the Intersection over Union (IoU) threshold for Non-Maximum Suppression (NMS). Adjusting this value can help reduce overlapping detections.
+
+- `--conf_thres`: *float*  
+  **Default**: `0.25`  
+  Defines the confidence threshold for NMS. Detections with a confidence score below this threshold will be discarded.
+
+- `--class_agnostic`: *flag*  
+  This is a boolean flag (use `--class_agnostic` to enable).  
+  **Default**: `False`  
+  When set, applies class-agnostic NMS, which treats all classes equally when suppressing overlapping detections.
+
+- `--pooler_scale`: *float*  
+  **Default**: `0.25`  
+  Specifies the scale for the ROI pooler operations. This parameter affects how features are extracted from the model for different regions of interest.
+
+- `--sampling_ratio`: *int*  
+  **Default**: `0`  
+  Determines the sampling ratio for ROI alignment. A value of `0` indicates that the default sampling ratio will be used.
+
+- `--mask_resolution`: *int*  
+  **Default**: `160`  
+  Sets the resolution for masks during export. Higher resolutions can provide finer details in mask outputs.
+
+
+
+
+
 <div align="center">
   <p>
     <a href="https://www.ultralytics.com/events/yolovision" target="_blank">
