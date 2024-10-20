@@ -460,6 +460,8 @@ class Exporter:
     def export_onnx_trt(self, prefix=colorstr("ONNX:")):
         """YOLOv8 ONNX export."""
         requirements = ["onnx>=1.12.0"]
+        if not self.args.trt_plugin:
+            raise RuntimeError(f"\n{prefix} You must use trt_plugin=True (Supported only to YOLOV8).")
         if self.args.simplify:
             requirements += ["onnxsim>=0.4.33", "onnxruntime-gpu" if torch.cuda.is_available() else "onnxruntime"]
             if ARM64:
@@ -472,6 +474,7 @@ class Exporter:
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
         f = os.path.splitext(self.file)[0] + "-trt.onnx"
         batch_size = 'batch'
+        dynamic = self.args.dynamic
         d = {
             'stride': int(max(self.model.stride)),
             'names': self.model.names,
@@ -509,9 +512,9 @@ class Exporter:
                 batch_size,  self.args.topk_all, self.args.mask_resolution * self.args.mask_resolution]
         
         dynamic_axes.update(output_axes)
-    
+        
         self.model = End2End_TRT(self.model, self.args.class_agnostic, self.args.topk_all, self.args.iou_thres, self.args.conf_thres, self.args.mask_resolution, self.args.pooler_scale, self.args.sampling_ratio, None ,self.args.device, labels, is_det_model )
-        dynamic = self.args.dynamic
+        
 
         torch.onnx.export( self.model.cpu() if dynamic else self.model,  # dynamic=True only compatible with cpu
                             self.im.cpu() if dynamic else self.im,
@@ -1667,7 +1670,7 @@ class End2End_TRT(torch.nn.Module):
         device = device if device else torch.device('cpu')
         assert isinstance(max_wh,(int)) or max_wh is None
         self.model = model.to(device)
-        self.model.model[-1].end2end = True
+        self.model.model[-1].end2end = False
         if is_det_model:
             self.patch_model = ONNX_EfficientNMS_TRT 
             self.end2end = self.patch_model(class_agnostic, max_obj, iou_thres, score_thres, max_wh, device, n_classes)

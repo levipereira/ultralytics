@@ -85,6 +85,7 @@ simplify: True # (bool) ONNX: simplify model using `onnxslim`
 opset: # (int, optional) ONNX: opset version
 workspace: 4 # (int) TensorRT: workspace size (GB)
 nms: False # (bool) CoreML: add NMS
+trt_plugin: False
 topk_all: 100
 iou_thres: 0.45
 conf_thres: 0.25
