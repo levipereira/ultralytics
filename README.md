@@ -7,7 +7,8 @@ I developed this project to assist the community in integrating these models wit
 ## Features
 
 - Support for EfficientNMS/EfficientNMSX plugins from TensorRT.
-- Option to use NMS-Free (available in YOLOv10 models).
+- Support NMS-Free (available in YOLOv10 models).
+- Generate Labels Files
 
 ## Installation
 
@@ -31,7 +32,9 @@ yolo export model=models/yolo11n.pt format=onnx_trt dynamic=True topk_all=100
 ```
 ### Python
 You can utilize the `onnx_trt.py` script with the following options:
-
+```bash
+python3 onnx_trt.py  -w models/yolo11n.pt --topk_all 100
+```
 ## Arguments
 
 The `onnx_trt.py` script accepts several command-line arguments to customize its behavior. Below is a list of available options along with their default values and descriptions:
