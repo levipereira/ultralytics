@@ -479,6 +479,7 @@ class Exporter:
             'stride': int(max(self.model.stride)),
             'names': self.model.names,
             'model type' : 'Segmentation' if isinstance(self.model, SegmentationModel) else 'Detection',
+            'train input shape' :  f'{tuple(self.im.shape[1:])} - CHW',
             'TRT Compatibility': '8.6 or above' if self.args.class_agnostic else '8.5 or above',
             'TRT Plugins': 'TRT_EfficientNMSX, ROIAlign' if isinstance(self.model, SegmentationModel) else 'TRT_EfficientNMS'  
             }
