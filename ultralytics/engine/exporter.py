@@ -4,20 +4,20 @@ Export a YOLO PyTorch model to other formats. TensorFlow exports authored by htt
 
 Format                  | `format=argument`         | Model
 ---                     | ---                       | ---
-PyTorch                 | -                         | yolov8n.pt
-TorchScript             | `torchscript`             | yolov8n.torchscript
-ONNX                    | `onnx`                    | yolov8n.onnx
-OpenVINO                | `openvino`                | yolov8n_openvino_model/
-TensorRT                | `engine`                  | yolov8n.engine
-CoreML                  | `coreml`                  | yolov8n.mlpackage
-TensorFlow SavedModel   | `saved_model`             | yolov8n_saved_model/
-TensorFlow GraphDef     | `pb`                      | yolov8n.pb
-TensorFlow Lite         | `tflite`                  | yolov8n.tflite
-TensorFlow Edge TPU     | `edgetpu`                 | yolov8n_edgetpu.tflite
-TensorFlow.js           | `tfjs`                    | yolov8n_web_model/
-PaddlePaddle            | `paddle`                  | yolov8n_paddle_model/
-NCNN                    | `ncnn`                    | yolov8n_ncnn_model/
-ONNX TensorRT           | `onnx`                    | yolov8n_trt.onnx
+PyTorch                 | -                         | yolo11n.pt
+TorchScript             | `torchscript`             | yolo11n.torchscript
+ONNX                    | `onnx`                    | yolo11n.onnx
+OpenVINO                | `openvino`                | yolo11n_openvino_model/
+TensorRT                | `engine`                  | yolo11n.engine
+CoreML                  | `coreml`                  | yolo11n.mlpackage
+TensorFlow SavedModel   | `saved_model`             | yolo11n_saved_model/
+TensorFlow GraphDef     | `pb`                      | yolo11n.pb
+TensorFlow Lite         | `tflite`                  | yolo11n.tflite
+TensorFlow Edge TPU     | `edgetpu`                 | yolo11n_edgetpu.tflite
+TensorFlow.js           | `tfjs`                    | yolo11n_web_model/
+PaddlePaddle            | `paddle`                  | yolo11n_paddle_model/
+NCNN                    | `ncnn`                    | yolo11n_ncnn_model/
+ONNX TensorRT           | `onnx`                    | yolo11n_trt.onnx
 
 
 Requirements:
@@ -195,6 +195,7 @@ class Exporter:
         if sum(flags) != 1:
             raise ValueError(f"Invalid export format='{fmt}'. Valid formats are {fmts}")
         jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn, onnx_trt = flags  # export booleans
+        is_tf_format = any((saved_model, pb, tflite, edgetpu, tfjs))
 
         # Device
         if fmt == "engine" and self.args.device is None:
@@ -510,9 +511,10 @@ class Exporter:
         dynamic_axes.update(output_axes)
     
         self.model = End2End_TRT(self.model, self.args.class_agnostic, self.args.topk_all, self.args.iou_thres, self.args.conf_thres, self.args.mask_resolution, self.args.pooler_scale, self.args.sampling_ratio, None ,self.args.device, labels, is_det_model )
+        dynamic = self.args.dynamic
 
-        torch.onnx.export(self.model.cpu(), 
-                            self.im.cpu() , 
+        torch.onnx.export( self.model.cpu() if dynamic else self.model,  # dynamic=True only compatible with cpu
+                            self.im.cpu() if dynamic else self.im,
                             f, 
                             verbose=False, 
                             export_params=True,       # store the trained parameter weights inside the model file
