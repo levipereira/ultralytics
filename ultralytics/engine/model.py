@@ -875,7 +875,9 @@ class Model(torch.nn.Module):
         
         # Update model after QAT
         if RANK in {-1, 0}:
-            self.overrides = self._reset_ckpt_args(self.model.args)
+            # Convert IterableSimpleNamespace to dict before calling _reset_ckpt_args
+            model_args = vars(self.model.args) if hasattr(self.model.args, '__dict__') else self.model.args
+            self.overrides = self._reset_ckpt_args(model_args)
             
         return results
 
