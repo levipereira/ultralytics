@@ -100,8 +100,9 @@ class QATMixin:
             )
             
             # Restore model attributes that may be lost during quantization
+            # Args come from trainer, not model
             if not hasattr(self.quantized_model, 'args'):
-                self.quantized_model.args = self.model.args
+                self.quantized_model.args = self.args
             if not hasattr(self.quantized_model, 'nc'):
                 self.quantized_model.nc = self.model.nc
             if not hasattr(self.quantized_model, 'names'):
