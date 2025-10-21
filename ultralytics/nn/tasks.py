@@ -1516,7 +1516,7 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
     """
     ckpt, weight = torch_safe_load(weight)  # load ckpt
     
-    # Check if this is a QAT model saved with nvidia-modelopt
+    # Check if this is a QAT model saved with nvidia-modelopt or full state
     is_qat_model = False
     if "model" not in ckpt and "ema" not in ckpt:
         try:
@@ -1563,6 +1563,12 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
                 "Checkpoint does not contain 'model' or 'ema' key and is not a valid QAT model. "
                 "Ensure you are loading a valid YOLO or QAT checkpoint."
             )
+    elif "is_quantized" in ckpt and ckpt["is_quantized"]:
+        # This is a full QAT checkpoint with calibration
+        LOGGER.info("Detected full QAT checkpoint with calibration data")
+        model = ckpt["model"]
+        is_qat_model = True
+        LOGGER.info(f"✅ QAT model with calibration loaded ({sum(p.numel() for p in model.parameters())} parameters)")
     
     args = {**DEFAULT_CFG_DICT, **(ckpt.get("train_args", {}))}  # combine model and default args, preferring model args
     

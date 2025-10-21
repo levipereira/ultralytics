@@ -298,10 +298,27 @@ class QATMixin:
                 # Save best model
                 if best_metrics is None or metrics.get("fitness", 0) > best_metrics.get("fitness", 0):
                     best_metrics = metrics
-                    # Save QAT model using nvidia-modelopt save function
+                    
+                    # Save QAT model with full state (including calibration)
                     qat_path = self.save_dir / "best_qat.pt"
+                    
+                    # Method 1: mto.save() for ModelOpt compatibility
                     mto.save(self.model, str(qat_path))
-                    LOGGER.info(f"Saved best QAT model: {qat_path}")
+                    LOGGER.info(f"Saved best QAT model (ModelOpt format): {qat_path}")
+                    
+                    # Method 2: Also save with full state_dict including calibration
+                    qat_full_path = self.save_dir / "best_qat_full.pt"
+                    torch.save({
+                        'model': self.model,
+                        'model_state_dict': self.model.state_dict(),
+                        'quantization_config': self.quantization_config,
+                        'metrics': best_metrics,
+                        'is_quantized': True,
+                        'task': self.model.task,
+                        'names': self.model.names,
+                        'stride': self.model.stride,
+                    }, str(qat_full_path))
+                    LOGGER.info(f"Saved best QAT model (full state with calibration): {qat_full_path}")
                 
                 LOGGER.info(f"QAT Epoch {epoch} metrics: {metrics}")
             

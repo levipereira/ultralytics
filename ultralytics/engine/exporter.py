@@ -537,17 +537,27 @@ class Exporter:
             )
             preserve_quantization = False
         
-        # Handle quantized model export - disable quantizers BEFORE deepcopy
+        # Handle quantized model export - check if quantizers have calibration
         if preserve_quantization:
-            # Disable quantizers to allow ONNX export
+            # Check if quantizers have calibration data (_amax)
             try:
                 import modelopt.torch.quantization as mtq
-                LOGGER.info("Disabling quantizers for ONNX export compatibility...")
-                mtq.disable_quantizer(model, "*")
-                LOGGER.warning(
-                    "⚠️  Quantizers disabled for export. "
-                    "Model will export as FP32. For INT8 deployment, use TensorRT with calibration."
-                )
+                
+                # Check if quantizers are calibrated
+                has_calibration = False
+                for name, module in model.named_modules():
+                    if hasattr(module, '_input_quantizer') and hasattr(module._input_quantizer, '_amax'):
+                        has_calibration = True
+                        break
+                
+                if has_calibration:
+                    LOGGER.info("✅ Quantizers have calibration data, preserving for ONNX export")
+                else:
+                    LOGGER.warning("⚠️  Quantizers not calibrated, disabling for ONNX export compatibility...")
+                    mtq.disable_quantizer(model, "*")
+                    LOGGER.warning(
+                        "Model will export as FP32. For INT8 deployment, use TensorRT with calibration."
+                    )
             except ImportError:
                 pass
             
