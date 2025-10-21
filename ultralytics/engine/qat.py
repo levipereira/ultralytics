@@ -272,13 +272,16 @@ class QATMixin:
                 T_max=self.quantization_config["qat_epochs"]
             )
             
+            # Initialize loss tracking (for formatted output like training)
+            self.tloss = None
+            
             # QAT training loop
             best_metrics = None
             for epoch in range(1, self.quantization_config["qat_epochs"] + 1):
-                LOGGER.info(f"QAT Epoch {epoch}/{self.quantization_config['qat_epochs']}")
+                self.epoch = epoch  # Store current epoch for display
                 
                 # Training step
-                self._qat_train_epoch(optimizer)
+                self._qat_train_epoch(optimizer, epoch)
                 
                 # Validation step
                 validator = self.get_validator()
@@ -307,13 +310,16 @@ class QATMixin:
             LOGGER.error(f"QAT fine-tuning failed: {e}")
             raise
     
-    def _qat_train_epoch(self, optimizer):
+    def _qat_train_epoch(self, optimizer, epoch):
         """
         Single QAT training epoch following nvidia-modelopt pattern.
         
         Args:
             optimizer: Optimizer for QAT training
+            epoch: Current epoch number
         """
+        from ultralytics.utils import TQDM
+        
         self.model.train()
         
         # Get training dataloader
@@ -324,7 +330,11 @@ class QATMixin:
             mode="train"
         )
         
-        for i, batch in enumerate(train_loader):
+        # Initialize progress bar similar to standard training
+        nb = len(train_loader)  # number of batches
+        pbar = TQDM(enumerate(train_loader), total=nb, bar_format="{l_bar}{bar:10}{r_bar}")
+        
+        for i, batch in pbar:
             # Preprocess batch
             batch = self.preprocess_batch(batch)
             
@@ -340,9 +350,27 @@ class QATMixin:
             loss.backward()
             optimizer.step()
             
-            # Log progress
-            if i % 50 == 0:  # Log every 50 batches
-                LOGGER.info(f"QAT Batch {i}: Loss = {loss.item():.4f}")
+            # Update running loss (exponential moving average)
+            if self.tloss is None:
+                self.tloss = loss_items
+            else:
+                self.tloss = (self.tloss * i + loss_items) / (i + 1)  # update mean losses
+            
+            # Format progress bar output similar to training
+            # Format: Epoch/Total  GPU_mem  box_loss  cls_loss  dfl_loss  Instances  Size
+            loss_length = self.tloss.shape[0] if len(self.tloss.shape) else 1
+            mem = f"{self._get_memory():.3g}G" if torch.cuda.is_available() else "N/A"
+            
+            pbar.set_description(
+                ("%11s" * 2 + "%11.4g" * (2 + loss_length))
+                % (
+                    f"{epoch}/{self.quantization_config['qat_epochs']}",  # Epoch
+                    mem,  # GPU memory
+                    *(self.tloss if loss_length > 1 else torch.unsqueeze(self.tloss, 0)),  # losses
+                    batch["cls"].shape[0],  # batch size (instances)
+                    batch["img"].shape[-1],  # image size
+                )
+            )
     
     def export_quantized(self, **kwargs):
         """
