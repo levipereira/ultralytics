@@ -806,6 +806,75 @@ class Model(torch.nn.Module):
             self.metrics = getattr(self.trainer.validator, "metrics", None)  # TODO: no metrics returned by DDP
         return self.metrics
 
+    def qat(self, **kwargs: Any):
+        """
+        Perform Quantization Aware Training (QAT) on the model.
+
+        This method facilitates quantization aware training using nvidia-modelopt, handling model quantization,
+        calibration, and export to quantized formats. It reuses the existing training infrastructure for
+        data loading and model management.
+
+        Args:
+            **kwargs (Any): Arbitrary keyword arguments for QAT configuration. Common options include:
+                data (str): Path to dataset configuration file.
+                epochs (int): Number of training epochs (optional for QAT).
+                batch (int): Batch size for calibration.
+                imgsz (int): Input image size.
+                device (str): Device to run QAT on (e.g., 'cuda', 'cpu').
+                quantization_scheme (str): Quantization scheme ('int8', 'int4').
+                calibration_method (str): Calibration method ('minmax', 'histogram').
+                calibration_samples (int): Number of samples for calibration.
+                export_format (str): Export format ('onnx', 'torchscript').
+
+        Returns:
+            (dict): QAT results including export path and metrics.
+
+        Examples:
+            >>> model = YOLO("yolo11n.pt")
+            >>> results = model.qat(data="coco8.yaml", calibration_samples=100)
+        """
+        self._check_is_pytorch_model()
+        
+        # Import QAT trainer
+        from ultralytics.engine.qat import QATTrainer
+        
+        # Setup QAT configuration
+        overrides = YAML.load(checks.check_yaml(kwargs["cfg"])) if kwargs.get("cfg") else self.overrides
+        custom = {
+            "data": overrides.get("data") or DEFAULT_CFG_DICT["data"] or TASK2DATA[self.task],
+            "model": self.overrides["model"],
+            "task": self.task,
+        }  # method defaults
+        
+        # QAT-specific defaults
+        qat_defaults = {
+            "mode": "qat",
+            "epochs": 1,  # QAT typically doesn't need many epochs
+            "batch": kwargs.get("batch", 16),
+            "calibration_samples": kwargs.get("calibration_samples", 100),
+            "quantization_scheme": kwargs.get("quantization_scheme", "int8"),
+            "calibration_method": kwargs.get("calibration_method", "minmax"),
+            "export_format": kwargs.get("export_format", "onnx"),
+        }
+        
+        args = {**overrides, **custom, **qat_defaults, **kwargs, "session": self.session}
+        
+        # Initialize QAT trainer
+        self.trainer = QATTrainer(overrides=args, _callbacks=self.callbacks)
+        
+        # Set model for QAT trainer
+        self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
+        self.model = self.trainer.model
+        
+        # Execute QAT process
+        results = self.trainer.train()
+        
+        # Update model after QAT
+        if RANK in {-1, 0}:
+            self.overrides = self._reset_ckpt_args(self.model.args)
+            
+        return results
+
     def tune(
         self,
         use_ray=False,
