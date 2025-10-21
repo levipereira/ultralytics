@@ -285,6 +285,10 @@ class QATMixin:
             # Forward pass
             loss, loss_items = self.model(batch)
             
+            # Ensure loss is scalar (sum if it's a tensor with multiple values)
+            if loss.numel() > 1:
+                loss = loss.sum()
+            
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
