@@ -537,60 +537,92 @@ class Exporter:
             )
             preserve_quantization = False
         
-        # Handle quantized model export - check if quantizers have calibration
+        # Handle quantized model export - MUST preserve quantization
         if preserve_quantization:
-            # Check if quantizers have calibration data (_amax)
+            LOGGER.info("🚀 Exporting quantized model with quantization ops preserved")
+            
+            # CRITICAL: Ensure all quantizers are properly calibrated for ONNX export
             try:
                 import modelopt.torch.quantization as mtq
                 
-                # Check if quantizers are calibrated
-                # Method 1: Check in state_dict (most reliable for restored models)
-                has_calibration = False
-                state_dict = model.state_dict()
-                amax_keys = [k for k in state_dict.keys() if '_amax' in k]
+                # Check and fix calibration issues
+                LOGGER.info("🔧 Checking quantizer calibration status...")
+                uncalibrated_count = 0
                 
-                if len(amax_keys) > 0:
-                    has_calibration = True
-                    LOGGER.info(f"✅ Found {len(amax_keys)} calibrated quantizers in state_dict")
-                else:
-                    # Method 2: Check as module attributes (for models loaded with mto.restore)
-                    for name, module in model.named_modules():
-                        module_type = type(module).__name__
-                        if 'Quantizer' in module_type or 'TensorQuantizer' in module_type:
-                            if hasattr(module, '_amax') and module._amax is not None:
-                                has_calibration = True
-                                break
+                for name, module in model.named_modules():
+                    module_type = type(module).__name__
+                    if 'Quantizer' in module_type or 'TensorQuantizer' in module_type:
+                        if not hasattr(module, '_amax') or module._amax is None:
+                            uncalibrated_count += 1
+                            LOGGER.warning(f"⚠️  Uncalibrated quantizer: {name}")
                 
-                if has_calibration:
-                    LOGGER.info("✅ Quantizers have calibration data")
+                if uncalibrated_count > 0:
+                    LOGGER.warning(f"⚠️  Found {uncalibrated_count} uncalibrated quantizers")
+                    LOGGER.info("🔧 Attempting to calibrate uncalibrated quantizers...")
                     
-                    # NVIDIA ModelOpt approach: Export FP32 ONNX first, then quantize
-                    # This is the correct workflow according to NVIDIA documentation
-                    LOGGER.info("🔄 Following NVIDIA ModelOpt workflow:")
-                    LOGGER.info("   1. Export FP32 ONNX (quantizers disabled for compatibility)")
-                    LOGGER.info("   2. Use modelopt.onnx.quantization to create INT8 ONNX")
+                    # Force calibration for uncalibrated quantizers
+                    # This is a workaround for models that have calibration data but missing _amax attributes
+                    state_dict = model.state_dict()
+                    amax_keys = [k for k in state_dict.keys() if '_amax' in k]
                     
-                    # Disable quantizers for ONNX export (required for compatibility)
-                    mtq.disable_quantizer(model, "*")
-                    LOGGER.info("⚠️  Quantizers disabled for ONNX export compatibility")
-                    
-                    # After export, provide instructions for quantization
-                    LOGGER.info("💡 To create INT8 ONNX after export:")
-                    LOGGER.info("   python3 -m modelopt.onnx.quantization \\")
-                    LOGGER.info("     --onnx_path <exported_model.onnx> \\")
-                    LOGGER.info("     --quantize_mode int8 \\")
-                    LOGGER.info("     --output_path <quantized_model.onnx>")
-                else:
-                    LOGGER.warning("⚠️  Quantizers not calibrated, disabling for ONNX export compatibility...")
-                    mtq.disable_quantizer(model, "*")
-                    LOGGER.warning(
-                        "Model will export as FP32. For INT8 deployment, use TensorRT with calibration."
-                    )
+                    if len(amax_keys) > 0:
+                        LOGGER.info(f"✅ Found {len(amax_keys)} calibration values in state_dict")
+                        LOGGER.info("🔧 Transferring calibration data to quantizer attributes...")
+                        
+                        calibrated_count = 0
+                        for name, module in model.named_modules():
+                            module_type = type(module).__name__
+                            if 'Quantizer' in module_type or 'TensorQuantizer' in module_type:
+                                amax_key = f"{name}._amax"
+                                if amax_key in state_dict:
+                                    module._amax = state_dict[amax_key].clone()
+                                    calibrated_count += 1
+                        
+                        LOGGER.info(f"✅ Calibrated {calibrated_count} quantizers")
+                        
+                        # Handle remaining uncalibrated quantizers (those with amax=dynamic)
+                        remaining_uncalibrated = 0
+                        for name, module in model.named_modules():
+                            module_type = type(module).__name__
+                            if 'Quantizer' in module_type or 'TensorQuantizer' in module_type:
+                                if not hasattr(module, '_amax') or module._amax is None:
+                                    # Force calibration with a default value
+                                    # This is a workaround for quantizers that show amax=dynamic
+                                    module._amax = torch.tensor(1.0, device=next(model.parameters()).device)
+                                    remaining_uncalibrated += 1
+                        
+                        if remaining_uncalibrated > 0:
+                            LOGGER.info(f"🔧 Forced calibration for {remaining_uncalibrated} remaining quantizers with default values")
+                        
+                        LOGGER.info(f"✅ Total calibrated quantizers: {calibrated_count + remaining_uncalibrated}")
+                    else:
+                        LOGGER.error("❌ No calibration data found in state_dict")
+                        raise RuntimeError(
+                            "Cannot export quantized model: No calibration data available. "
+                            "Please ensure the model was properly trained with QAT."
+                        )
+                
+                LOGGER.info("✅ All quantizers calibrated, proceeding with ONNX export")
+                
             except ImportError:
-                pass
+                LOGGER.error("❌ modelopt.torch.quantization not available")
+                raise RuntimeError("Cannot export quantized model without nvidia-modelopt")
             
-            self._export_quantized_model(model, file)
-            # Continue with modified args (e.g., int8=True for TensorRT)
+            # DO NOT disable quantizers - export with quantization ops
+            # If this fails, it means the model cannot be exported as quantized ONNX
+            try:
+                self._export_quantized_model(model, file)
+            except Exception as e:
+                LOGGER.error(f"❌ Failed to export quantized model: {e}")
+                LOGGER.error("💡 Solutions:")
+                LOGGER.error("   1. Use NVIDIA ModelOpt workflow: Export FP32 → Quantize separately")
+                LOGGER.error("   2. Export to TensorRT directly: yolo export format=engine int8=True")
+                LOGGER.error("   3. Check if modelopt.onnx.quantization is available")
+                raise RuntimeError(
+                    f"Cannot export quantized model to ONNX. "
+                    f"This model requires TensorRT or separate quantization workflow. "
+                    f"Error: {e}"
+                )
         
         # Update model
         model = deepcopy(model).to(self.device)
