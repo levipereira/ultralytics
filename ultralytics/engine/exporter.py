@@ -362,13 +362,13 @@ class Exporter:
             LOGGER.info("Exporting quantized model with nvidia-modelopt...")
             
             # Print quantization summary
-            LOGGER.info("Quantization configuration:")
+            LOGGER.info("Quantization configuration (before disabling for export):")
             mtq.print_quant_summary(model)
             
             # For ONNX export, quantization ops are automatically preserved
             # Standard torch.onnx.export will include quantization operations
             if self.args.format == 'onnx':
-                LOGGER.info("ONNX export will preserve quantization operations")
+                LOGGER.info("ONNX export (quantizers disabled for compatibility)")
             elif self.args.format == 'engine':  # TensorRT
                 LOGGER.info("TensorRT export will use INT8 precision from QAT")
                 # Set int8=True for TensorRT to use quantization
@@ -537,8 +537,20 @@ class Exporter:
             )
             preserve_quantization = False
         
-        # Handle quantized model export
+        # Handle quantized model export - disable quantizers BEFORE deepcopy
         if preserve_quantization:
+            # Disable quantizers to allow ONNX export
+            try:
+                import modelopt.torch.quantization as mtq
+                LOGGER.info("Disabling quantizers for ONNX export compatibility...")
+                mtq.disable_quantizer(model, "*")
+                LOGGER.warning(
+                    "⚠️  Quantizers disabled for export. "
+                    "Model will export as FP32. For INT8 deployment, use TensorRT with calibration."
+                )
+            except ImportError:
+                pass
+            
             self._export_quantized_model(model, file)
             # Continue with modified args (e.g., int8=True for TensorRT)
         

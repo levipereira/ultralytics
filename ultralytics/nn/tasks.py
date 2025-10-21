@@ -1515,8 +1515,62 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
         ckpt (dict): Model checkpoint dictionary.
     """
     ckpt, weight = torch_safe_load(weight)  # load ckpt
+    
+    # Check if this is a QAT model saved with nvidia-modelopt
+    is_qat_model = False
+    if "model" not in ckpt and "ema" not in ckpt:
+        try:
+            import modelopt.torch.opt as mto
+            from ultralytics import YOLO
+            
+            LOGGER.info("Detected QAT model format (nvidia-modelopt), loading with mto.restore()...")
+            
+            # Need to load a base model first to restore QAT weights
+            # Try to find model name from path or use default
+            base_model_name = "yolo11n.pt"  # default
+            if "yolo11n" in str(weight).lower():
+                base_model_name = "yolo11n.pt"
+            elif "yolo11s" in str(weight).lower():
+                base_model_name = "yolo11s.pt"
+            elif "yolo11m" in str(weight).lower():
+                base_model_name = "yolo11m.pt"
+            elif "yolo11l" in str(weight).lower():
+                base_model_name = "yolo11l.pt"
+            elif "yolo11x" in str(weight).lower():
+                base_model_name = "yolo11x.pt"
+            
+            LOGGER.info(f"Loading base model: {base_model_name}")
+            base_yolo = YOLO(base_model_name)
+            base_model = base_yolo.model
+            
+            # Restore QAT model
+            model = mto.restore(base_model, str(weight))
+            is_qat_model = True
+            
+            # Create a minimal ckpt dict for compatibility
+            ckpt = {"train_args": {}, "model": model}
+            LOGGER.info(f"✅ QAT model loaded successfully ({sum(p.numel() for p in model.parameters())} parameters)")
+            
+        except ImportError:
+            LOGGER.error(
+                "Failed to load QAT model: nvidia-modelopt not available. "
+                "Install with: pip install nvidia-modelopt"
+            )
+            raise
+        except Exception as e:
+            LOGGER.error(f"Failed to load QAT model: {e}")
+            raise KeyError(
+                "Checkpoint does not contain 'model' or 'ema' key and is not a valid QAT model. "
+                "Ensure you are loading a valid YOLO or QAT checkpoint."
+            )
+    
     args = {**DEFAULT_CFG_DICT, **(ckpt.get("train_args", {}))}  # combine model and default args, preferring model args
-    model = (ckpt.get("ema") or ckpt["model"]).float()  # FP32 model
+    
+    # Skip float() for QAT models to preserve quantization
+    if is_qat_model:
+        model = ckpt["model"]
+    else:
+        model = (ckpt.get("ema") or ckpt["model"]).float()  # FP32 model
 
     # Model compatibility updates
     model.args = args  # attach args to model
@@ -1525,7 +1579,12 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
     if not hasattr(model, "stride"):
         model.stride = torch.tensor([32.0])
 
-    model = (model.fuse() if fuse and hasattr(model, "fuse") else model).eval().to(device)  # model in eval mode
+    # Skip fuse() for QAT models to preserve quantization
+    if is_qat_model:
+        LOGGER.info("Skipping model.fuse() to preserve QAT quantization")
+        model = model.eval().to(device)
+    else:
+        model = (model.fuse() if fuse and hasattr(model, "fuse") else model).eval().to(device)  # model in eval mode
 
     # Module updates
     for m in model.modules():
