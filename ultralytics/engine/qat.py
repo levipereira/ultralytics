@@ -103,12 +103,11 @@ class QATMixin:
             # Args come from trainer, not model
             if not hasattr(self.quantized_model, 'args'):
                 self.quantized_model.args = self.args
-            if not hasattr(self.quantized_model, 'nc'):
-                self.quantized_model.nc = self.model.nc
-            if not hasattr(self.quantized_model, 'names'):
-                self.quantized_model.names = self.model.names
-            if not hasattr(self.quantized_model, 'stride'):
-                self.quantized_model.stride = self.model.stride
+            
+            # Copy other important attributes if they exist in original model
+            for attr in ['names', 'stride', 'yaml', 'save', 'inplace']:
+                if hasattr(self.model, attr) and not hasattr(self.quantized_model, attr):
+                    setattr(self.quantized_model, attr, getattr(self.model, attr))
             
             LOGGER.info("Quantization setup completed successfully")
             
