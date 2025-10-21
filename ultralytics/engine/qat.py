@@ -137,7 +137,8 @@ class QATMixin:
                 self.quantized_model.args = self.args
             
             # Copy other important attributes if they exist in original model
-            for attr in ['names', 'stride', 'yaml', 'save', 'inplace']:
+            # Including 'task' which is required for export
+            for attr in ['names', 'stride', 'yaml', 'save', 'inplace', 'task']:
                 if hasattr(self.model, attr) and not hasattr(self.quantized_model, attr):
                     setattr(self.quantized_model, attr, getattr(self.model, attr))
             
