@@ -47,14 +47,30 @@ class QATMixin:
     
     def _setup_quantization_config(self):
         """Setup default quantization configuration following nvidia-modelopt patterns."""
+        # Get user-specified config from args if available
+        calibration_samples = getattr(self.args, 'calibration_samples', 512)
+        qat_epochs = getattr(self.args, 'epochs', 100)
+        
+        # Following NVIDIA best practices: QAT for 10% of original training epochs
+        # For pre-trained models, use a reasonable default
+        if qat_epochs > 50:
+            qat_epochs = max(int(qat_epochs * 0.1), 5)  # 10% with minimum of 5 epochs
+        
+        # Following NVIDIA best practices: Use 10% of original learning rate for QAT
+        # Get the original learning rate from args
+        original_lr = getattr(self.args, 'lr0', 0.01)
+        qat_lr = original_lr * 0.1  # 10% of original learning rate
+        
         self.quantization_config = {
-            "quantization_scheme": "int8",  # Default to int8 quantization
-            "calibration_method": "minmax",  # Default calibration method
-            "export_format": "onnx",  # Default export format
-            "calibration_samples": 512,  # Number of samples for calibration (following nvidia example)
-            "qat_epochs": 5,  # Number of QAT fine-tuning epochs
-            "qat_lr": 1e-4,  # Learning rate for QAT fine-tuning
+            "quantization_scheme": getattr(self.args, 'quantization_scheme', 'int8'),
+            "calibration_method": getattr(self.args, 'calibration_method', 'max'),  # 'max' is default in nvidia-modelopt
+            "export_format": getattr(self.args, 'export_format', 'onnx'),
+            "calibration_samples": calibration_samples,
+            "qat_epochs": qat_epochs,
+            "qat_lr": qat_lr,
         }
+        
+        LOGGER.info(f"QAT Configuration: epochs={qat_epochs}, lr={qat_lr:.6f}, calibration_samples={calibration_samples}")
     
     def setup_quantization(self):
         """
@@ -70,8 +86,20 @@ class QATMixin:
             
             LOGGER.info("Setting up quantization with nvidia-modelopt...")
             
-            # Use default INT8 configuration from nvidia-modelopt
-            quant_cfg = mtq.INT8_DEFAULT_CFG
+            # Select quantization config based on scheme (following NVIDIA best practices)
+            scheme = self.quantization_config["quantization_scheme"].lower()
+            if scheme == "int8":
+                quant_cfg = mtq.INT8_DEFAULT_CFG
+                LOGGER.info("Using INT8_DEFAULT_CFG for CNN quantization")
+            elif scheme == "int8_smoothquant":
+                quant_cfg = mtq.INT8_SMOOTHQUANT_CFG
+                LOGGER.info("Using INT8_SMOOTHQUANT_CFG (better for large models)")
+            elif scheme == "fp8":
+                quant_cfg = mtq.FP8_DEFAULT_CFG
+                LOGGER.info("Using FP8_DEFAULT_CFG (requires modern GPUs)")
+            else:
+                LOGGER.warning(f"Unknown quantization scheme '{scheme}', falling back to INT8_DEFAULT_CFG")
+                quant_cfg = mtq.INT8_DEFAULT_CFG
             
             # Create calibration function following nvidia example pattern
             def calibrate_fn(model):
@@ -98,6 +126,10 @@ class QATMixin:
                 quant_cfg, 
                 calibrate_fn
             )
+            
+            # Following NVIDIA best practices: Print quantization summary to verify quantizer placement
+            LOGGER.info("Quantization summary (verify quantizer placement):")
+            mtq.print_quant_summary(self.quantized_model)
             
             # Restore model attributes that may be lost during quantization
             # Args come from trainer, not model
@@ -161,13 +193,17 @@ class QATMixin:
         LOGGER.info("Evaluating PTQ quantized model...")
         
         try:
+            # Following NVIDIA best practices: Set model to eval mode for PTQ evaluation
+            self.quantized_model.eval()
+            
             # Temporarily replace model for evaluation
             original_model = self.model
             self.model = self.quantized_model
             
             # Use existing validation infrastructure
-            validator = self.get_validator()
-            self.ptq_metrics = validator()
+            with torch.no_grad():  # Following best practices: no gradients during PTQ evaluation
+                validator = self.get_validator()
+                self.ptq_metrics = validator()
             
             # Restore original model
             self.model = original_model
@@ -200,6 +236,7 @@ class QATMixin:
         Perform QAT fine-tuning following nvidia-modelopt pattern.
         
         This method implements the QAT fine-tuning loop similar to the official example.
+        Following NVIDIA best practices: freeze quantizer states during QAT fine-tuning.
         """
         if self.quantized_model is None:
             raise RuntimeError("Quantized model not available. Call setup_quantization() first.")
@@ -207,11 +244,20 @@ class QATMixin:
         LOGGER.info("Starting QAT fine-tuning...")
         
         try:
+            import modelopt.torch.quantization as mtq
             import modelopt.torch.opt as mto
             
             # Replace model with quantized version for QAT
             original_model = self.model
             self.model = self.quantized_model
+            
+            # Following NVIDIA best practices: Disable quantizers before QAT
+            # This freezes the quantizer parameters (scales/zero-points) from PTQ calibration
+            # Only the model weights will be fine-tuned during QAT
+            LOGGER.info("Freezing quantizer states (following NVIDIA best practices)...")
+            mtq.disable_quantizer(self.model, "*")
+            mtq.enable_quantizer(self.model, "*weight_quantizer")  # Keep weight quantizers enabled
+            mtq.enable_quantizer(self.model, "*input_quantizer")   # Keep input quantizers enabled
             
             # Setup optimizer and scheduler for QAT (following nvidia example)
             optimizer = torch.optim.SGD(

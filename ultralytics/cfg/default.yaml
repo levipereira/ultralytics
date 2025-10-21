@@ -130,8 +130,9 @@ cfg: # (str, optional) path to a config.yaml that overrides defaults
 tracker: botsort.yaml # (str) tracker config file: botsort.yaml or bytetrack.yaml
 
 # QAT (Quantization Aware Training) settings ---------------------------------------------------------------------------
-quantization_scheme: int8 # (str) quantization scheme: int8, int4
-calibration_method: minmax # (str) calibration method: minmax, histogram
-calibration_samples: 512 # (int) number of samples for calibration
-qat_lr: 0.0001 # (float) learning rate for QAT fine-tuning
+# Following NVIDIA TensorRT Model Optimizer best practices: https://nvidia.github.io/TensorRT-Model-Optimizer/
+quantization_scheme: int8 # (str) quantization scheme: int8, int8_smoothquant, fp8
+calibration_method: max # (str) calibration method: max, minmax, histogram (default: max per nvidia-modelopt)
+calibration_samples: 512 # (int) number of samples for calibration (recommended: 128-512)
+qat_lr: 0.0001 # (float) learning rate for QAT fine-tuning (auto: 10% of lr0 if not specified)
 export_format: onnx # (str) export format for quantized model: onnx, torchscript
