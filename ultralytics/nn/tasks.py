@@ -1565,8 +1565,48 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
             )
     elif "is_quantized" in ckpt and ckpt["is_quantized"]:
         # This is a full QAT checkpoint with calibration
+        # Following NVIDIA ModelOpt restore best practices
         LOGGER.info("Detected full QAT checkpoint with calibration data")
-        model = ckpt["model"]
+        
+        # Check if we have modelopt_state to restore architecture
+        if "modelopt_state" in ckpt:
+            try:
+                import modelopt.torch.opt as mto
+                from ultralytics import YOLO
+                
+                # Method from NVIDIA docs: restore architecture first, then load full model
+                LOGGER.info("Restoring model architecture from modelopt_state...")
+                
+                # Get base model structure
+                base_model_name = "yolo11n.pt"  # default
+                if "yolo11n" in str(weight).lower():
+                    base_model_name = "yolo11n.pt"
+                elif "yolo11s" in str(weight).lower():
+                    base_model_name = "yolo11s.pt"
+                elif "yolo11m" in str(weight).lower():
+                    base_model_name = "yolo11m.pt"
+                elif "yolo11l" in str(weight).lower():
+                    base_model_name = "yolo11l.pt"
+                elif "yolo11x" in str(weight).lower():
+                    base_model_name = "yolo11x.pt"
+                
+                base_yolo = YOLO(base_model_name)
+                base_model = base_yolo.model
+                
+                # Restore architecture using modelopt_state
+                model = mto.restore_from_modelopt_state(base_model, ckpt["modelopt_state"])
+                
+                # Load the full model state (includes calibration)
+                model.load_state_dict(ckpt["model_state_dict"])
+                
+                LOGGER.info("✅ Model architecture restored + calibration loaded")
+            except Exception as e:
+                LOGGER.warning(f"Failed to restore from modelopt_state: {e}, loading model directly")
+                model = ckpt["model"]
+        else:
+            # Fallback: direct model loading
+            model = ckpt["model"]
+        
         is_qat_model = True
         LOGGER.info(f"✅ QAT model with calibration loaded ({sum(p.numel() for p in model.parameters())} parameters)")
     

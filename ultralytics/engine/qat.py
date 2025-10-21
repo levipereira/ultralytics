@@ -299,18 +299,26 @@ class QATMixin:
                 if best_metrics is None or metrics.get("fitness", 0) > best_metrics.get("fitness", 0):
                     best_metrics = metrics
                     
-                    # Save QAT model with full state (including calibration)
+                    # Following NVIDIA ModelOpt best practices for saving:
+                    # https://nvidia.github.io/TensorRT-Model-Optimizer/guides/2_save_load.html
+                    
+                    # Method 1: mto.save() - Saves modelopt_state + weights (but NOT calibration _amax)
                     qat_path = self.save_dir / "best_qat.pt"
-                    
-                    # Method 1: mto.save() for ModelOpt compatibility
                     mto.save(self.model, str(qat_path))
-                    LOGGER.info(f"Saved best QAT model (ModelOpt format): {qat_path}")
+                    LOGGER.info(f"Saved QAT model (ModelOpt state + weights): {qat_path}")
                     
-                    # Method 2: Also save with full state_dict including calibration
+                    # Method 2: Save modelopt_state separately + full model (NVIDIA recommended)
+                    # This preserves calibration values (_amax) in the full model
+                    modelopt_state_path = self.save_dir / "best_qat_modelopt_state.pth"
+                    torch.save(mto.modelopt_state(self.model), str(modelopt_state_path))
+                    LOGGER.info(f"Saved ModelOpt state separately: {modelopt_state_path}")
+                    
+                    # Save complete model with ALL attributes (including _amax calibration)
                     qat_full_path = self.save_dir / "best_qat_full.pt"
                     torch.save({
-                        'model': self.model,
+                        'model': self.model,  # Full model with calibration
                         'model_state_dict': self.model.state_dict(),
+                        'modelopt_state': mto.modelopt_state(self.model),  # ModelOpt state
                         'quantization_config': self.quantization_config,
                         'metrics': best_metrics,
                         'is_quantized': True,
@@ -318,7 +326,7 @@ class QATMixin:
                         'names': self.model.names,
                         'stride': self.model.stride,
                     }, str(qat_full_path))
-                    LOGGER.info(f"Saved best QAT model (full state with calibration): {qat_full_path}")
+                    LOGGER.info(f"Saved complete QAT model (with calibration): {qat_full_path}")
                 
                 LOGGER.info(f"QAT Epoch {epoch} metrics: {metrics}")
             
