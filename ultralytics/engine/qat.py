@@ -116,7 +116,7 @@ class QATMixin:
         try:
             # Ensure datasets are loaded
             if not hasattr(self, 'test_loader') or self.test_loader is None:
-                self.testset = self.get_dataset(self.args.data, "val")
+                self.testset = self.build_dataset(self.data["val"], mode="val", batch=self.args.batch)
                 self.test_loader = self.get_dataloader(self.testset, batch=self.args.batch * 2, mode="val")
             
             # Use existing validation infrastructure
@@ -165,14 +165,16 @@ class QATMixin:
         """
         Get dataloader for calibration following nvidia-modelopt pattern.
         
+        Uses validation dataset for calibration (following nvidia example).
         Reuses the existing dataloader infrastructure from BaseTrainer.
         """
-        # Ensure dataset is loaded
-        if not hasattr(self, 'train_dataset') or self.train_dataset is None:
-            self.train_dataset = self.get_dataset(self.args.data, "train")
+        # Ensure validation dataset is loaded for calibration
+        if not hasattr(self, 'testset') or self.testset is None:
+            self.testset = self.build_dataset(self.data["val"], mode="val", batch=self.args.batch)
         
-        # Reuse existing dataloader setup with minimal workers for calibration
-        return self.get_dataloader(self.train_dataset, batch=self.batch_size, rank=-1, mode="train")
+        # Reuse existing dataloader setup for calibration (using val set)
+        # Use num_workers=0 for calibration as per nvidia example
+        return self.get_dataloader(self.testset, batch=self.batch_size, rank=-1, mode="val")
     
     def qat_fine_tuning(self):
         """
@@ -248,6 +250,10 @@ class QATMixin:
             optimizer: Optimizer for QAT training
         """
         self.model.train()
+        
+        # Ensure dataset is loaded
+        if not hasattr(self, 'train_dataset') or self.train_dataset is None:
+            self.train_dataset = self.build_dataset(self.data["train"], mode="train", batch=self.args.batch)
         
         # Get training dataloader
         train_loader = self.get_dataloader(self.train_dataset, batch=self.batch_size, rank=-1, mode="train")
