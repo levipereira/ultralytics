@@ -1596,16 +1596,22 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
                 # Restore architecture using modelopt_state
                 model = mto.restore_from_modelopt_state(base_model, ckpt["modelopt_state"])
                 
-                # Load the full model state (includes calibration)
+                # Load the full model state (includes calibration buffers like _amax)
                 model.load_state_dict(ckpt["model_state_dict"])
                 
                 LOGGER.info("✅ Model architecture restored + calibration loaded")
             except Exception as e:
-                LOGGER.warning(f"Failed to restore from modelopt_state: {e}, loading model directly")
-                model = ckpt["model"]
+                LOGGER.error(f"Failed to restore QAT model from modelopt_state: {e}")
+                raise RuntimeError(
+                    f"Cannot load QAT checkpoint. Error: {e}\n"
+                    "Make sure the checkpoint was saved with a compatible version of nvidia-modelopt."
+                )
         else:
-            # Fallback: direct model loading
-            model = ckpt["model"]
+            LOGGER.error("QAT checkpoint missing 'modelopt_state' - cannot restore architecture")
+            raise KeyError(
+                "QAT checkpoint must contain 'modelopt_state' to restore the quantized architecture. "
+                "This checkpoint may be from an older version. Please re-train the model."
+            )
         
         is_qat_model = True
         LOGGER.info(f"✅ QAT model with calibration loaded ({sum(p.numel() for p in model.parameters())} parameters)")

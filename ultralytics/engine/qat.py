@@ -307,26 +307,32 @@ class QATMixin:
                     mto.save(self.model, str(qat_path))
                     LOGGER.info(f"Saved QAT model (ModelOpt state + weights): {qat_path}")
                     
-                    # Method 2: Save modelopt_state separately + full model (NVIDIA recommended)
-                    # This preserves calibration values (_amax) in the full model
+                    # Method 2: Save modelopt_state separately (NVIDIA recommended)
                     modelopt_state_path = self.save_dir / "best_qat_modelopt_state.pth"
                     torch.save(mto.modelopt_state(self.model), str(modelopt_state_path))
                     LOGGER.info(f"Saved ModelOpt state separately: {modelopt_state_path}")
                     
-                    # Save complete model with ALL attributes (including _amax calibration)
+                    # Method 3: Save state_dict with calibration data
+                    # Note: Can't pickle the full model due to dynamic QuantConv2d classes
+                    # Instead, we save state_dict which includes buffers (_amax values)
                     qat_full_path = self.save_dir / "best_qat_full.pt"
+                    
+                    # Get complete state dict including all buffers (_amax, _scale, etc.)
+                    full_state = self.model.state_dict()
+                    
+                    # Save state_dict + metadata (no model object to avoid pickle error)
                     torch.save({
-                        'model': self.model,  # Full model with calibration
-                        'model_state_dict': self.model.state_dict(),
-                        'modelopt_state': mto.modelopt_state(self.model),  # ModelOpt state
+                        'model_state_dict': full_state,  # Includes _amax buffers
+                        'modelopt_state': mto.modelopt_state(self.model),  # Architecture info
                         'quantization_config': self.quantization_config,
                         'metrics': best_metrics,
                         'is_quantized': True,
                         'task': getattr(self.model, 'task', 'detect'),
                         'names': getattr(self.model, 'names', None),
                         'stride': getattr(self.model, 'stride', None),
+                        'yaml': getattr(self.model, 'yaml', None),
                     }, str(qat_full_path))
-                    LOGGER.info(f"Saved complete QAT model (with calibration): {qat_full_path}")
+                    LOGGER.info(f"Saved complete state with calibration: {qat_full_path}")
                 
                 LOGGER.info(f"QAT Epoch {epoch} metrics: {metrics}")
             
