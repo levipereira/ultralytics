@@ -544,14 +544,42 @@ class Exporter:
                 import modelopt.torch.quantization as mtq
                 
                 # Check if quantizers are calibrated
+                # Method 1: Check in state_dict (most reliable for restored models)
                 has_calibration = False
-                for name, module in model.named_modules():
-                    if hasattr(module, '_input_quantizer') and hasattr(module._input_quantizer, '_amax'):
-                        has_calibration = True
-                        break
+                state_dict = model.state_dict()
+                amax_keys = [k for k in state_dict.keys() if '_amax' in k]
+                
+                if len(amax_keys) > 0:
+                    has_calibration = True
+                    LOGGER.info(f"✅ Found {len(amax_keys)} calibrated quantizers in state_dict")
+                else:
+                    # Method 2: Check as module attributes (for models loaded with mto.restore)
+                    for name, module in model.named_modules():
+                        module_type = type(module).__name__
+                        if 'Quantizer' in module_type or 'TensorQuantizer' in module_type:
+                            if hasattr(module, '_amax') and module._amax is not None:
+                                has_calibration = True
+                                break
                 
                 if has_calibration:
-                    LOGGER.info("✅ Quantizers have calibration data, preserving for ONNX export")
+                    LOGGER.info("✅ Quantizers have calibration data")
+                    
+                    # NVIDIA ModelOpt approach: Export FP32 ONNX first, then quantize
+                    # This is the correct workflow according to NVIDIA documentation
+                    LOGGER.info("🔄 Following NVIDIA ModelOpt workflow:")
+                    LOGGER.info("   1. Export FP32 ONNX (quantizers disabled for compatibility)")
+                    LOGGER.info("   2. Use modelopt.onnx.quantization to create INT8 ONNX")
+                    
+                    # Disable quantizers for ONNX export (required for compatibility)
+                    mtq.disable_quantizer(model, "*")
+                    LOGGER.info("⚠️  Quantizers disabled for ONNX export compatibility")
+                    
+                    # After export, provide instructions for quantization
+                    LOGGER.info("💡 To create INT8 ONNX after export:")
+                    LOGGER.info("   python3 -m modelopt.onnx.quantization \\")
+                    LOGGER.info("     --onnx_path <exported_model.onnx> \\")
+                    LOGGER.info("     --quantize_mode int8 \\")
+                    LOGGER.info("     --output_path <quantized_model.onnx>")
                 else:
                     LOGGER.warning("⚠️  Quantizers not calibrated, disabling for ONNX export compatibility...")
                     mtq.disable_quantizer(model, "*")

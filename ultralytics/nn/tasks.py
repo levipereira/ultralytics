@@ -1599,6 +1599,23 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
                 # Load the full model state (includes calibration buffers like _amax)
                 model.load_state_dict(ckpt["model_state_dict"])
                 
+                # CRITICAL: Transfer _amax from buffers to quantizer attributes
+                # ModelOpt quantizers need _amax as attributes for ONNX export
+                LOGGER.info("Transferring calibration data from buffers to quantizer attributes...")
+                state_dict = ckpt["model_state_dict"]
+                amax_transferred = 0
+                
+                for name, module in model.named_modules():
+                    module_type = type(module).__name__
+                    if 'Quantizer' in module_type or 'TensorQuantizer' in module_type:
+                        # Look for _amax buffer for this quantizer
+                        amax_key = f"{name}._amax"
+                        if amax_key in state_dict:
+                            # Transfer buffer value to attribute
+                            module._amax = state_dict[amax_key].clone()
+                            amax_transferred += 1
+                
+                LOGGER.info(f"✅ Transferred {amax_transferred} calibration values to quantizer attributes")
                 LOGGER.info("✅ Model architecture restored + calibration loaded")
             except Exception as e:
                 LOGGER.error(f"Failed to restore QAT model from modelopt_state: {e}")
