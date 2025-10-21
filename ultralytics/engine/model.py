@@ -835,8 +835,8 @@ class Model(torch.nn.Module):
         """
         self._check_is_pytorch_model()
         
-        # Import QAT trainer
-        from ultralytics.engine.qat import QATTrainer
+        # Import QAT trainer factory
+        from ultralytics.engine.qat import get_qat_trainer
         
         # Setup QAT configuration
         overrides = YAML.load(checks.check_yaml(kwargs["cfg"])) if kwargs.get("cfg") else self.overrides
@@ -859,6 +859,9 @@ class Model(torch.nn.Module):
         }
         
         args = {**overrides, **custom, **qat_defaults, **kwargs, "session": self.session}
+        
+        # Get appropriate QAT trainer for the task
+        QATTrainer = get_qat_trainer(self.task)
         
         # Initialize QAT trainer
         self.trainer = QATTrainer(overrides=args, _callbacks=self.callbacks)

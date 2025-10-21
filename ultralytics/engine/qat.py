@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ultralytics.utils import LOGGER, checks
-from ultralytics.engine.trainer import BaseTrainer
 
 
-class QATTrainer(BaseTrainer):
+class QATMixin:
     """
     Quantization Aware Training (QAT) trainer for YOLO models.
     
@@ -34,16 +33,9 @@ class QATTrainer(BaseTrainer):
         export_quantized: Export quantized model to ONNX
     """
     
-    def __init__(self, cfg=None, overrides: Optional[Dict[str, Any]] = None, _callbacks=None):
-        """
-        Initialize QAT trainer.
-        
-        Args:
-            cfg: Configuration object
-            overrides: Configuration overrides
-            _callbacks: Callback functions
-        """
-        super().__init__(cfg, overrides, _callbacks)
+    def __init__(self, *args, **kwargs):
+        """Initialize QAT trainer with quantization-specific attributes."""
+        super().__init__(*args, **kwargs)
         self.quantized_model = None
         self.calibration_data = None
         self.quantization_config = {}
@@ -122,6 +114,11 @@ class QATTrainer(BaseTrainer):
         LOGGER.info("Evaluating FP32 baseline...")
         
         try:
+            # Ensure datasets are loaded
+            if not hasattr(self, 'test_loader') or self.test_loader is None:
+                self.testset = self.get_dataset(self.args.data, "val")
+                self.test_loader = self.get_dataloader(self.testset, batch=self.args.batch * 2, mode="val")
+            
             # Use existing validation infrastructure
             validator = self.get_validator()
             self.fp32_metrics = validator()
@@ -170,6 +167,10 @@ class QATTrainer(BaseTrainer):
         
         Reuses the existing dataloader infrastructure from BaseTrainer.
         """
+        # Ensure dataset is loaded
+        if not hasattr(self, 'train_dataset') or self.train_dataset is None:
+            self.train_dataset = self.get_dataset(self.args.data, "train")
+        
         # Reuse existing dataloader setup with minimal workers for calibration
         return self.get_dataloader(self.train_dataset, batch=self.batch_size, rank=-1, mode="train")
     
@@ -359,3 +360,66 @@ class QATTrainer(BaseTrainer):
         except Exception as e:
             LOGGER.error(f"QAT workflow failed: {e}")
             raise
+
+
+# Task-specific QAT Trainers that inherit from both QATMixin and the task trainer
+class DetectionQATTrainer(QATMixin):
+    """QAT Trainer for detection tasks."""
+    pass
+
+
+class SegmentationQATTrainer(QATMixin):
+    """QAT Trainer for segmentation tasks."""
+    pass
+
+
+class ClassificationQATTrainer(QATMixin):
+    """QAT Trainer for classification tasks."""
+    pass
+
+
+class PoseQATTrainer(QATMixin):
+    """QAT Trainer for pose estimation tasks."""
+    pass
+
+
+class OBBQATTrainer(QATMixin):
+    """QAT Trainer for oriented bounding box tasks."""
+    pass
+
+
+def get_qat_trainer(task):
+    """
+    Get the appropriate QAT trainer for the specified task.
+    
+    Args:
+        task (str): Task name (detect, segment, classify, pose, obb)
+        
+    Returns:
+        QAT trainer class for the specified task
+    """
+    from ultralytics.models import yolo
+    
+    # Map tasks to their trainers
+    task_trainer_map = {
+        "detect": (yolo.detect.DetectionTrainer, DetectionQATTrainer),
+        "segment": (yolo.segment.SegmentationTrainer, SegmentationQATTrainer),
+        "classify": (yolo.classify.ClassificationTrainer, ClassificationQATTrainer),
+        "pose": (yolo.pose.PoseTrainer, PoseQATTrainer),
+        "obb": (yolo.obb.OBBTrainer, OBBQATTrainer),
+    }
+    
+    if task not in task_trainer_map:
+        raise ValueError(f"Unsupported task: {task}. Supported tasks: {list(task_trainer_map.keys())}")
+    
+    base_trainer, qat_trainer = task_trainer_map[task]
+    
+    # Dynamically create QAT trainer class that inherits from both QATMixin and base trainer
+    # This ensures proper MRO (Method Resolution Order) with QATMixin first
+    qat_trainer_class = type(
+        f"{task.capitalize()}QATTrainer",
+        (QATMixin, base_trainer),
+        {"__module__": __name__}
+    )
+    
+    return qat_trainer_class

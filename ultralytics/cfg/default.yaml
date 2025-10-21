@@ -128,3 +128,10 @@ cfg: # (str, optional) path to a config.yaml that overrides defaults
 
 # Tracker settings ------------------------------------------------------------------------------------------------------
 tracker: botsort.yaml # (str) tracker config file: botsort.yaml or bytetrack.yaml
+
+# QAT (Quantization Aware Training) settings ---------------------------------------------------------------------------
+quantization_scheme: int8 # (str) quantization scheme: int8, int4
+calibration_method: minmax # (str) calibration method: minmax, histogram
+calibration_samples: 512 # (int) number of samples for calibration
+qat_lr: 0.0001 # (float) learning rate for QAT fine-tuning
+export_format: onnx # (str) export format for quantized model: onnx, torchscript
