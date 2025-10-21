@@ -99,6 +99,16 @@ class QATMixin:
                 calibrate_fn
             )
             
+            # Restore model attributes that may be lost during quantization
+            if not hasattr(self.quantized_model, 'args'):
+                self.quantized_model.args = self.model.args
+            if not hasattr(self.quantized_model, 'nc'):
+                self.quantized_model.nc = self.model.nc
+            if not hasattr(self.quantized_model, 'names'):
+                self.quantized_model.names = self.model.names
+            if not hasattr(self.quantized_model, 'stride'):
+                self.quantized_model.stride = self.model.stride
+            
             LOGGER.info("Quantization setup completed successfully")
             
         except ImportError as e:
