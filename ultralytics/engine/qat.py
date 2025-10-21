@@ -30,7 +30,7 @@ class QATMixin:
     Methods:
         setup_quantization: Initialize quantization modules
         calibrate_model: Calibrate the quantized model
-        export_quantized: Export quantized model to ONNX
+        qat_fine_tuning: Fine-tune the quantized model
     """
     
     def __init__(self, *args, **kwargs):
@@ -322,9 +322,9 @@ class QATMixin:
                         'quantization_config': self.quantization_config,
                         'metrics': best_metrics,
                         'is_quantized': True,
-                        'task': self.model.task,
-                        'names': self.model.names,
-                        'stride': self.model.stride,
+                        'task': getattr(self.model, 'task', 'detect'),
+                        'names': getattr(self.model, 'names', None),
+                        'stride': getattr(self.model, 'stride', None),
                     }, str(qat_full_path))
                     LOGGER.info(f"Saved complete QAT model (with calibration): {qat_full_path}")
                 
@@ -402,52 +402,6 @@ class QATMixin:
                 )
             )
     
-    def export_quantized(self, **kwargs):
-        """
-        Export quantized model to ONNX format following nvidia-modelopt pattern.
-        
-        Args:
-            **kwargs: Additional export arguments
-            
-        Returns:
-            str: Path to exported quantized model
-        """
-        if self.quantized_model is None:
-            raise RuntimeError("Quantized model not available. Run setup_quantization() first.")
-        
-        LOGGER.info("Exporting quantized model...")
-        
-        try:
-            # Use existing export infrastructure but with quantized model
-            from ultralytics.engine.exporter import Exporter
-            
-            # Prepare export arguments
-            export_args = {
-                "format": self.quantization_config["export_format"],
-                "imgsz": self.args.imgsz,
-                "batch": 1,
-                "device": self.device,
-                "verbose": True,
-                **kwargs
-            }
-            
-            # Temporarily replace model for export
-            original_model = self.model
-            self.model = self.quantized_model
-            
-            # Export quantized model
-            exporter = Exporter(overrides=export_args, _callbacks=self.callbacks)
-            export_path = exporter(model=self.quantized_model)
-            
-            # Restore original model
-            self.model = original_model
-            
-            LOGGER.info(f"Quantized model exported to: {export_path}")
-            return export_path
-            
-        except Exception as e:
-            LOGGER.error(f"Export failed: {e}")
-            raise
     
     def train(self):
         """
@@ -475,20 +429,32 @@ class QATMixin:
             # Step 4: QAT fine-tuning
             qat_metrics = self.qat_fine_tuning()
             
-            # Step 5: Export quantized model
-            export_path = self.export_quantized()
-            
             # Compile results
             results = {
                 "fp32_metrics": fp32_metrics,
                 "ptq_metrics": ptq_metrics,
                 "qat_metrics": qat_metrics,
-                "export_path": export_path,
-                "quantization_config": self.quantization_config
+                "quantization_config": self.quantization_config,
+                "save_dir": str(self.save_dir),
             }
             
-            LOGGER.info("QAT workflow completed successfully")
-            LOGGER.info(f"Results: {results}")
+            # Final summary
+            LOGGER.info("\n" + "="*80)
+            LOGGER.info("QAT Training Completed Successfully")
+            LOGGER.info("="*80)
+            LOGGER.info(f"Results saved to: {self.save_dir}")
+            LOGGER.info(f"\nModel Files:")
+            LOGGER.info(f"  • best_qat.pt                   - ModelOpt format (mto.restore)")
+            LOGGER.info(f"  • best_qat_modelopt_state.pth   - ModelOpt state only")
+            LOGGER.info(f"  • best_qat_full.pt              - Complete with calibration (for INT8 export)")
+            LOGGER.info(f"\nMetrics Summary:")
+            LOGGER.info(f"  • FP32 Baseline:  mAP50-95 = {fp32_metrics.get('metrics/mAP50-95(B)', 0):.4f}")
+            LOGGER.info(f"  • PTQ (no train): mAP50-95 = {ptq_metrics.get('metrics/mAP50-95(B)', 0):.4f}")
+            LOGGER.info(f"  • QAT (trained):  mAP50-95 = {qat_metrics.get('metrics/mAP50-95(B)', 0):.4f}")
+            LOGGER.info(f"\nTo export to ONNX INT8:")
+            LOGGER.info(f"  yolo export model={self.save_dir}/best_qat_full.pt format=onnx")
+            LOGGER.info("="*80 + "\n")
+            
             return results
             
         except Exception as e:
