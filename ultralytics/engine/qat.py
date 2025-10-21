@@ -77,14 +77,18 @@ class QATMixin:
             def calibrate_fn(model):
                 """Calibration function following nvidia-modelopt pattern."""
                 model.eval()
+                # Ensure model is on correct device
+                model.to(self.device)
                 seen = 0
                 calibration_loader = self.get_calibration_dataloader()
                 
                 with torch.no_grad():
                     for batch in calibration_loader:
                         batch = self.preprocess_batch(batch)
-                        model(batch["img"])
-                        seen += batch["img"].size(0)
+                        # Ensure batch is on same device as model
+                        imgs = batch["img"].to(self.device)
+                        model(imgs)
+                        seen += imgs.size(0)
                         if seen >= self.quantization_config["calibration_samples"]:
                             break
             
