@@ -51,7 +51,7 @@ SOLUTION_MAP = {
 }
 
 # Define valid tasks and modes
-MODES = frozenset({"train", "val", "predict", "export", "track", "benchmark"})
+MODES = frozenset({"train", "val", "predict", "export", "track", "benchmark", "qat"})
 TASKS = frozenset({"detect", "segment", "classify", "pose", "obb"})
 TASK2DATA = {
     "detect": "coco8.yaml",
@@ -128,7 +128,10 @@ CLI_HELP_MSG = f"""
     4. Export a YOLO11n classification model to ONNX format at image size 224 by 128 (no TASK required)
         yolo export model=yolo11n-cls.pt format=onnx imgsz=224,128
 
-    5. Ultralytics solutions usage
+    5. Quantization Aware Training (QAT) for a detection model:
+        yolo qat data=coco8.yaml model=yolo11n.pt epochs=10
+
+    6. Ultralytics solutions usage
         yolo solutions count or in {list(SOLUTION_MAP.keys())[1:-1]} source="path/to/video.mp4"
 
     6. Run special commands:
