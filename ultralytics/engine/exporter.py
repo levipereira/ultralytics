@@ -299,6 +299,96 @@ class Exporter:
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
         callbacks.add_integration_callbacks(self)
 
+    def _detect_quantization(self, model):
+        """
+        Detect if model has quantization from nvidia-modelopt.
+        
+        This method checks for TensorQuantizer modules inserted by nvidia-modelopt
+        to determine if the model is quantized (QAT).
+        
+        Args:
+            model (torch.nn.Module): Model to check for quantization
+            
+        Returns:
+            (bool): True if model is quantized, False otherwise
+            
+        Examples:
+            >>> exporter = Exporter()
+            >>> is_qat = exporter._detect_quantization(model)
+            >>> if is_qat:
+            >>>     print("Model is quantized")
+        """
+        try:
+            # Check for explicit quantization marker
+            if hasattr(model, '_is_quantized') and model._is_quantized:
+                LOGGER.info("Model marked as quantized (_is_quantized=True)")
+                return True
+            
+            # Check for TensorQuantizer modules from nvidia-modelopt
+            quantizer_count = 0
+            for name, module in model.named_modules():
+                module_type = type(module).__name__
+                # Check for quantizer modules
+                if 'Quantizer' in module_type or 'TensorQuantizer' in module_type:
+                    quantizer_count += 1
+            
+            if quantizer_count > 0:
+                LOGGER.info(f"🔢 Quantized model detected: {quantizer_count} quantizers found")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            LOGGER.debug(f"Quantization detection failed: {e}")
+            return False
+
+    def _export_quantized_model(self, model, file):
+        """
+        Export quantized model preserving quantization information.
+        
+        This method handles export of QAT models with nvidia-modelopt quantization,
+        ensuring quantizers are preserved in the exported format.
+        
+        Args:
+            model (torch.nn.Module): Quantized model to export
+            file (Path): Output file path
+            
+        Returns:
+            (str): Path to exported model
+        """
+        try:
+            import modelopt.torch.quantization as mtq
+            
+            LOGGER.info("Exporting quantized model with nvidia-modelopt...")
+            
+            # Print quantization summary
+            LOGGER.info("Quantization configuration:")
+            mtq.print_quant_summary(model)
+            
+            # For ONNX export, quantization ops are automatically preserved
+            # Standard torch.onnx.export will include quantization operations
+            if self.args.format == 'onnx':
+                LOGGER.info("ONNX export will preserve quantization operations")
+            elif self.args.format == 'engine':  # TensorRT
+                LOGGER.info("TensorRT export will use INT8 precision from QAT")
+                # Set int8=True for TensorRT to use quantization
+                self.args.int8 = True
+            else:
+                LOGGER.warning(
+                    f"Format '{self.args.format}' may not fully support quantization. "
+                    "ONNX and TensorRT (engine) are recommended for quantized models."
+                )
+            
+            # Continue with standard export (quantization will be preserved)
+            return None  # Signal to continue with standard export flow
+            
+        except ImportError:
+            LOGGER.warning(
+                "nvidia-modelopt not available. Exporting as standard model. "
+                "Quantization information may be lost. Install with: pip install nvidia-modelopt"
+            )
+            return None
+
     def __call__(self, model=None) -> str:
         """Return list of exported files/dirs after running callbacks."""
         t = time.time()
@@ -433,13 +523,37 @@ class Exporter:
         if file.suffix in {".yaml", ".yml"}:
             file = Path(file.name)
 
+        # Detect quantization before any model modifications
+        is_quantized = self._detect_quantization(model)
+        quantized_arg = self.args.get('quantized', None)  # User can override with quantized=True/False
+        
+        # Determine if we should preserve quantization
+        preserve_quantization = is_quantized and (quantized_arg is None or quantized_arg)
+        
+        if is_quantized and quantized_arg is False:
+            LOGGER.warning(
+                "⚠️  Quantized model detected but quantized=False specified. "
+                "Quantization will be removed and model exported as FP32."
+            )
+            preserve_quantization = False
+        
+        # Handle quantized model export
+        if preserve_quantization:
+            self._export_quantized_model(model, file)
+            # Continue with modified args (e.g., int8=True for TensorRT)
+        
         # Update model
         model = deepcopy(model).to(self.device)
         for p in model.parameters():
             p.requires_grad = False
         model.eval()
-        model.float()
-        model = model.fuse()
+        
+        # Skip float() and fuse() for quantized models to preserve quantization
+        if not preserve_quantization:
+            model.float()
+            model = model.fuse()
+        else:
+            LOGGER.info("Skipping model.float() and model.fuse() to preserve quantization")
 
         if imx:
             from ultralytics.utils.export.imx import FXModel

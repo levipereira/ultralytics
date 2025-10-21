@@ -142,6 +142,10 @@ class QATMixin:
                 if hasattr(self.model, attr) and not hasattr(self.quantized_model, attr):
                     setattr(self.quantized_model, attr, getattr(self.model, attr))
             
+            # Mark model as quantized for automatic detection during export
+            self.quantized_model._is_quantized = True
+            LOGGER.info("Model marked as quantized (_is_quantized=True) for export detection")
+            
             LOGGER.info("Quantization setup completed successfully")
             
         except ImportError as e:
