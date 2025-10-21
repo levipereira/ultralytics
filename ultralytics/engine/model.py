@@ -846,15 +846,16 @@ class Model(torch.nn.Module):
             "task": self.task,
         }  # method defaults
         
-        # QAT-specific defaults
+        # QAT-specific defaults following nvidia-modelopt patterns
         qat_defaults = {
             "mode": "qat",
-            "epochs": 1,  # QAT typically doesn't need many epochs
+            "epochs": kwargs.get("epochs", 5),  # QAT fine-tuning epochs
             "batch": kwargs.get("batch", 16),
-            "calibration_samples": kwargs.get("calibration_samples", 100),
+            "calibration_samples": kwargs.get("calibration_samples", 512),  # Following nvidia example
             "quantization_scheme": kwargs.get("quantization_scheme", "int8"),
             "calibration_method": kwargs.get("calibration_method", "minmax"),
             "export_format": kwargs.get("export_format", "onnx"),
+            "qat_lr": kwargs.get("qat_lr", 1e-4),  # QAT learning rate
         }
         
         args = {**overrides, **custom, **qat_defaults, **kwargs, "session": self.session}
