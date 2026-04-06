@@ -68,6 +68,7 @@ import re
 import shutil
 import subprocess
 import time
+import warnings
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -128,6 +129,7 @@ from ultralytics.utils.torch_utils import (
     TORCH_1_13,
     TORCH_2_1,
     TORCH_2_3,
+    TORCH_2_4,
     TORCH_2_8,
     TORCH_2_9,
     select_device,
@@ -697,20 +699,30 @@ class Exporter:
 
     @try_export
     def export_onnx_trt(self, prefix=colorstr("ONNX TensorRT:")):
-        """Export YOLO model to ONNX with embedded TensorRT EfficientNMS plugins (format=onnx_trt)."""
+        """Export YOLO model to ONNX for TensorRT (format=onnx_trt).
+
+        Uses EfficientNMS_TRT only for heads that output raw boxes+scores (e.g. YOLOv8). YOLOv10/11/26 end-to-end heads
+        already include top-k in the graph; those exports omit the plugin (same path as v10).
+        """
         requirements = ["onnx>=1.12.0,<2.0.0"]
         if self.args.simplify:
             requirements += ["onnxsim>=0.4.33", "onnxruntime" + ("-gpu" if torch.cuda.is_available() else "")]
         check_requirements(requirements)
 
         import onnx  # noqa
-        from ultralytics.utils.export.engine import best_onnx_opset
+        from ultralytics.utils.export.engine import best_onnx_opset, patch_onnx_helper_for_graphsurgeon
 
         labels = len(self.model.names)
         is_det_model = True
+        # v10 / YOLO11 / YOLO26: head already applies top-k (internal "NMS"); ONNX must not add EfficientNMS_TRT.
         v10detect = False
         for m in self.model.modules():
             if isinstance(m, v10Detect):
+                v10detect = True
+                break
+        if not v10detect:
+            head = self.model.model[-1]
+            if isinstance(self.model, DetectionModel) and type(head) is Detect and head.end2end:
                 v10detect = True
 
         if len(self.model.names.keys()) > 0:
@@ -790,7 +802,7 @@ class Exporter:
             self.model.float()
             self.model.fuse()
             for m in self.model.modules():
-                if isinstance(m, v10Detect):
+                if isinstance(m, v10Detect) or (type(m) is Detect and m.end2end):
                     m.max_det = self.args.topk_all
 
         if v10detect:
@@ -829,18 +841,30 @@ class Exporter:
                 v10detect,
             )
 
-        torch.onnx.export(
-            self.model.cpu() if dynamic else self.model,
-            self.im.cpu() if dynamic else self.im,
-            f,
-            verbose=False,
-            export_params=True,
-            opset_version=opset_version,
-            do_constant_folding=True,
-            input_names=["images"],
-            output_names=output_names,
-            dynamic_axes=dynamic_axes,
-        )
+        self.model.eval()
+        # PyTorch 2.4+ defaults dynamo=True; dynamic_axes then triggers a warning and is ignored for shape hints.
+        # Match torch2onnx (utils/export/engine.py): use the legacy TorchScript exporter with dynamic_axes.
+        onnx_kwargs = {"dynamo": False} if TORCH_2_4 else {}
+        # Legacy exporter warns on aten::index → Gather; safe for typical YOLO inference (non-negative indices).
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Exporting aten::index operator of advanced indexing",
+                category=UserWarning,
+            )
+            torch.onnx.export(
+                self.model.cpu() if dynamic else self.model,
+                self.im.cpu() if dynamic else self.im,
+                f,
+                verbose=False,
+                export_params=True,
+                opset_version=opset_version,
+                do_constant_folding=True,
+                input_names=["images"],
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
+                **onnx_kwargs,
+            )
 
         model_onnx = onnx.load(f)
         onnx.checker.check_model(model_onnx)
@@ -868,6 +892,7 @@ class Exporter:
         check_requirements("onnx_graphsurgeon")
         LOGGER.info(f"\n{prefix} Starting to cleanup ONNX using onnx_graphsurgeon...")
         try:
+            patch_onnx_helper_for_graphsurgeon()
             import onnx_graphsurgeon as gs
 
             graph = gs.import_onnx(model_onnx)
@@ -1805,7 +1830,7 @@ class End2End_TRT(torch.nn.Module):
             x = self.end2end(x)
             return x
         else:
-            # For YOLOv10 / YOLO11, manually handle the detection outputs
+            # For YOLOv10 / YOLO11 / YOLO26 end-to-end: tensor is already [x1,y1,x2,y2, score, cls] per anchor after top-k.
             det_boxes = x[:, :, :4]
             det_scores = x[:, :, 4]
             det_classes = x[:, :, 5].int()

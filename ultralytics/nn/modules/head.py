@@ -152,6 +152,10 @@ class Detect(nn.Module):
             x_detach = [xi.detach() for xi in x]
             one2one = self.forward_head(x_detach, **self.one2one)
             preds = {"one2many": preds, "one2one": one2one}
+        elif not preds and hasattr(self, "one2one_cv2"):
+            # Fused end2end models clear cv2/cv3; with end2end=False (e.g. onnx_trt) use one2one only.
+            x_detach = [xi.detach() for xi in x]
+            preds = self.forward_head(x_detach, **self.one2one)
         if self.training:
             return preds
         y = self._inference(preds["one2one"] if self.end2end else preds)

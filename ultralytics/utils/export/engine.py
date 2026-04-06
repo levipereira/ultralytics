@@ -12,6 +12,24 @@ from ultralytics.utils import IS_JETSON, LOGGER, TORCH_VERSION, ThreadingLocked
 from ultralytics.utils.torch_utils import TORCH_2_4, TORCH_2_9
 
 
+def patch_onnx_helper_for_graphsurgeon() -> None:
+    """Restore ``onnx.helper.float32_to_bfloat16`` expected by onnx_graphsurgeon.
+
+    ONNX 1.17+ removed this helper, but NVIDIA onnx_graphsurgeon still references it during ``cleanup`` / ``export_onnx``.
+    """
+    import onnx.helper
+
+    if not hasattr(onnx.helper, "float32_to_bfloat16"):
+        import struct
+
+        def float32_to_bfloat16(fval):
+            """Convert float32 to bfloat16 (truncates lower 16 bits of mantissa)."""
+            ival = struct.unpack("=I", struct.pack("=f", fval))[0]
+            return ival >> 16
+
+        onnx.helper.float32_to_bfloat16 = float32_to_bfloat16
+
+
 def best_onnx_opset(onnx: types.ModuleType, cuda: bool = False) -> int:
     """Return max ONNX opset for this torch version with ONNX fallback."""
     if TORCH_2_4:  # _constants.ONNX_MAX_OPSET first defined in torch 1.13

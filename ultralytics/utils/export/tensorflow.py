@@ -11,6 +11,7 @@ import torch
 from ultralytics.nn.modules import Detect, Pose, Pose26
 from ultralytics.utils import LOGGER
 from ultralytics.utils.downloads import attempt_download_asset
+from ultralytics.utils.export.engine import patch_onnx_helper_for_graphsurgeon
 from ultralytics.utils.files import spaces_in_path
 from ultralytics.utils.tal import make_anchors
 
@@ -94,19 +95,7 @@ def onnx2saved_model(
             np.save(str(tmp_file), images)  # BHWC
             np_data = [["images", tmp_file, [[[[0, 0, 0]]]], [[[[255, 255, 255]]]]]]
 
-    # Patch onnx.helper for onnx_graphsurgeon compatibility with ONNX>=1.17
-    # The float32_to_bfloat16 function was removed in ONNX 1.17, but onnx_graphsurgeon still uses it
-    import onnx.helper
-
-    if not hasattr(onnx.helper, "float32_to_bfloat16"):
-        import struct
-
-        def float32_to_bfloat16(fval):
-            """Convert float32 to bfloat16 (truncates lower 16 bits of mantissa)."""
-            ival = struct.unpack("=I", struct.pack("=f", fval))[0]
-            return ival >> 16
-
-        onnx.helper.float32_to_bfloat16 = float32_to_bfloat16
+    patch_onnx_helper_for_graphsurgeon()
 
     import onnx2tf  # scoped for after ONNX export for reduced conflict during import
 
