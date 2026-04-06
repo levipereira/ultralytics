@@ -1,6 +1,6 @@
 # YOLO model export (ONNX / TensorRT)
 
-This repository is **for exporting trained YOLO weights** (for example `.pt`) to deployment formats only — in particular **ONNX** aimed at **NVIDIA TensorRT** and integrations such as **DeepStream**. It is not a replacement for full training or inference documentation; the scope here is the **export** pipeline.
+This repository is **for exporting trained YOLO weights**  to deployment formats only — in particular **ONNX** aimed at **NVIDIA TensorRT** and integrations such as **DeepStream**. It is not a replacement for full training or inference documentation; the scope here is the **export** pipeline.
 
 The codebase derives from the Ultralytics project (YOLOv8 / YOLO11 / YOLO26, etc.); the intended use in this fork is **export only**.
 
