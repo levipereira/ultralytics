@@ -5,9 +5,9 @@ keywords: Ultralytics, convolution modules, Conv, LightConv, GhostConv, YOLO, de
 
 # Reference for `ultralytics/nn/modules/conv.py`
 
-!!! note
+!!! success "Improvements"
 
-    This file is available at [https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/modules/conv.py](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/modules/conv.py). If you spot a problem please help fix it by [contributing](https://docs.ultralytics.com/help/contributing/) a [Pull Request](https://github.com/ultralytics/ultralytics/edit/main/ultralytics/nn/modules/conv.py) 🛠️. Thank you 🙏!
+    This page is sourced from [https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/modules/conv.py](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/modules/conv.py). Have an improvement or example to add? Open a [Pull Request](https://docs.ultralytics.com/help/contributing/) — thank you! 🙏
 
 <br>
 
@@ -60,6 +60,10 @@ keywords: Ultralytics, convolution modules, Conv, LightConv, GhostConv, YOLO, de
 <br><br><hr><br>
 
 ## ::: ultralytics.nn.modules.conv.Concat
+
+<br><br><hr><br>
+
+## ::: ultralytics.nn.modules.conv.Index
 
 <br><br><hr><br>
 

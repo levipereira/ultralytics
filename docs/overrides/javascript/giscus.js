@@ -1,7 +1,11 @@
+// Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
 // Giscus functionality
 function loadGiscus() {
   const giscusContainer = document.getElementById("giscus-container");
-  if (!giscusContainer || giscusContainer.querySelector("script")) return;
+  if (!giscusContainer || giscusContainer.querySelector("script")) {
+    return;
+  }
 
   const script = document.createElement("script");
   script.src = "https://giscus.app/client.js";
@@ -23,27 +27,24 @@ function loadGiscus() {
   giscusContainer.appendChild(script);
 
   // Synchronize Giscus theme with palette
-  var palette = __md_get("__palette");
+  const palette = __md_get("__palette");
   if (palette && typeof palette.color === "object") {
-    var theme = palette.color.scheme === "slate" ? "dark" : "light";
+    const theme = palette.color.scheme === "slate" ? "dark" : "light";
     script.setAttribute("data-theme", theme);
   }
 
   // Register event handlers for theme changes
-  var ref = document.querySelector("[data-md-component=palette]");
+  const ref = document.querySelector("[data-md-component=palette]");
   if (ref) {
-    ref.addEventListener("change", function () {
-      var palette = __md_get("__palette");
+    ref.addEventListener("change", () => {
+      const palette = __md_get("__palette");
       if (palette && typeof palette.color === "object") {
-        var theme = palette.color.scheme === "slate" ? "dark" : "light";
+        const theme = palette.color.scheme === "slate" ? "dark" : "light";
 
         // Instruct Giscus to change theme
-        var frame = document.querySelector(".giscus-frame");
+        const frame = document.querySelector(".giscus-frame");
         if (frame) {
-          frame.contentWindow.postMessage(
-            { giscus: { setConfig: { theme } } },
-            "https://giscus.app",
-          );
+          frame.contentWindow.postMessage({ giscus: { setConfig: { theme } } }, "https://giscus.app");
         }
       }
     });
@@ -55,14 +56,17 @@ function setupGiscusLoader() {
   const giscusContainer = document.getElementById("giscus-container");
 
   if (giscusContainer) {
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          loadGiscus();
-          observer.unobserve(entry.target);
-        }
-      });
-    }, { threshold: 0.1 }); // Trigger when 10% of the element is visible
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            loadGiscus();
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.1 },
+    ); // Trigger when 10% of the element is visible
 
     observer.observe(giscusContainer);
   }
