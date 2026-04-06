@@ -44,8 +44,17 @@ on:
         type: boolean
 
 jobs:
+  # One green check on forks without running benchmarks/tests (upstream runs full CI below)
+  ForkPlaceholder:
+    if: github.repository != 'ultralytics/ultralytics' && (github.event_name == 'push' || github.event_name == 'pull_request')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip full CI on forks
+        run: echo "Full Ultralytics CI runs only on ultralytics/ultralytics. Push to your fork without consuming Actions minutes."
+
   Benchmarks:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.benchmarks == 'true'
+    # Skip on forks (saves minutes; benchmarks assume upstream assets/runners)
+    if: github.repository == 'ultralytics/ultralytics' && (github.event_name != 'workflow_dispatch' || github.event.inputs.benchmarks == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -110,7 +119,7 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
   Tests:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    if: github.repository == 'ultralytics/ultralytics' && (github.event_name == 'pull_request' || github.event_name == 'push')
     timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     strategy:
@@ -161,7 +170,7 @@ jobs:
         run: uv cache prune --ci
 
   SlowTests:
-    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.tests == 'true') || github.event_name == 'schedule'
+    if: github.repository == 'ultralytics/ultralytics' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.tests == 'true') || github.event_name == 'schedule')
     timeout-minutes: 360
     runs-on: ${{ matrix.os }}
     strategy:
@@ -482,7 +491,7 @@ jobs:
   Summary:
     runs-on: ubuntu-latest
     needs: [Benchmarks, Tests, SlowTests, GPU, RaspberryPi, NVIDIA_Jetson, Conda]
-    if: always()
+    if: always() && github.repository == 'ultralytics/ultralytics'
     steps:
       - name: Check for failure and notify
         if: (needs.Benchmarks.result == 'failure' || needs.Tests.result == 'failure' || needs.SlowTests.result == 'failure' || needs.GPU.result == 'failure' || needs.RaspberryPi.result == 'failure' || needs.NVIDIA_Jetson.result == 'failure' || needs.Conda.result == 'failure' ) && github.repository == 'ultralytics/ultralytics' && (github.event_name == 'schedule' || github.event_name == 'push') && github.run_attempt == '1'
