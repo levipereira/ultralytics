@@ -90,8 +90,9 @@ simplify: True # (bool) ONNX/engine only; run graph simplifier for cleaner ONNX 
 opset: # (int, optional) ONNX/engine only; opset version for export; leave unset to use a tested default
 workspace: # (float, optional) engine (TensorRT) only; workspace size in GiB, e.g. 4
 nms: False # (bool) fuse NMS into exported model when backend supports; if True, conf/iou apply (agnostic_nms except coreml)
+etnms: False # (bool) ONNX only: append TensorRT EfficientNMS_TRT (requires TensorRT); use with end2end=False for raw boxes+scores
 # onnx_trt (TensorRT plugin) export extras
-topk_all: 100 # (int) max detections for onnx_trt export
+topk_all: 100 # (int) max detections for onnx_trt / etnms export
 iou_thres: 0.45 # (float) IoU threshold for TensorRT EfficientNMS in onnx_trt export
 conf_thres: 0.25 # (float) confidence threshold for TensorRT EfficientNMS in onnx_trt export
 class_agnostic: False # (bool) class-agnostic NMS for onnx_trt export

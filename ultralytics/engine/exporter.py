@@ -141,7 +141,7 @@ def export_formats():
     x = [
         ["PyTorch", "-", ".pt", True, True, []],
         ["TorchScript", "torchscript", ".torchscript", True, True, ["batch", "optimize", "half", "nms", "dynamic"]],
-        ["ONNX", "onnx", ".onnx", True, True, ["batch", "dynamic", "half", "opset", "simplify", "nms"]],
+        ["ONNX", "onnx", ".onnx", True, True, ["batch", "dynamic", "half", "opset", "simplify", "nms", "etnms"]],
         ["ONNX TensorRT", "onnx_trt", "_trt.onnx", True, True, ["batch", "dynamic", "half", "opset", "simplify"]],
         [
             "OpenVINO",
@@ -187,7 +187,7 @@ def validate_args(format, passed_args, valid_args):
     Raises:
         AssertionError: If an unsupported argument is used, or if the format lacks supported argument listings.
     """
-    export_args = ["half", "int8", "dynamic", "keras", "nms", "batch", "fraction"]
+    export_args = ["half", "int8", "dynamic", "keras", "nms", "etnms", "batch", "fraction"]
 
     assert valid_args is not None, f"ERROR ❌️ valid arguments for '{format}' not listed."
     custom = {"batch": 1, "data": None, "device": None}  # exporter defaults
@@ -284,6 +284,13 @@ class Exporter:
         self.args = get_cfg(cfg, overrides)
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
         callbacks.add_integration_callbacks(self)
+
+    def _task_model(self):
+        """Return the Ultralytics task model (unwraps nn.Sequential used for etnms ONNX)."""
+        m = self.model
+        if isinstance(m, nn.Sequential) and len(m) and hasattr(m[0], "task"):
+            return m[0]
+        return m
 
     def __call__(self, model=None) -> str:
         """Export a model and return the final exported path as a string.
@@ -403,10 +410,30 @@ class Exporter:
                 LOGGER.warning("'nms=True' is not available for end2end models. Forcing 'nms=False'.")
                 self.args.nms = False
             self.args.conf = self.args.conf or 0.25  # set conf default value for nms export
-        if (fmt in {"engine", "coreml"} or self.args.nms) and self.args.dynamic and self.args.batch == 1:
-            LOGGER.warning(
-                f"'dynamic=True' model with '{'nms=True' if self.args.nms else f'format={self.args.format}'}' requires max batch size, i.e. 'batch=16'"
+        if getattr(self.args, "etnms", False):
+            assert fmt == "onnx", "etnms=True is only supported for format=onnx"
+            assert isinstance(model, DetectionModel) and model.task == "detect", (
+                "etnms=True is only supported for detection models."
             )
+            if self.args.nms:
+                LOGGER.warning("etnms=True is incompatible with nms=True; setting nms=False.")
+                self.args.nms = False
+            if getattr(model, "end2end", False) or isinstance(model.model[-1], RTDETRDecoder):
+                LOGGER.warning("etnms=True requires raw one2many detection output; setting end2end=False.")
+            model.end2end = False
+            assert TORCH_1_13, f"'etnms=True' ONNX export requires torch>=1.13 (found torch=={TORCH_VERSION})"
+            self.args.conf = self.args.conf or 0.25  # score threshold for EfficientNMS_TRT
+        if (
+            fmt in {"engine", "coreml"} or self.args.nms or getattr(self.args, "etnms", False)
+        ) and self.args.dynamic and self.args.batch == 1:
+            tag = (
+                "nms=True"
+                if self.args.nms
+                else "etnms=True"
+                if getattr(self.args, "etnms", False)
+                else f"format={self.args.format}"
+            )
+            LOGGER.warning(f"'dynamic=True' model with '{tag}' requires max batch size, i.e. 'batch=16'")
         if fmt == "edgetpu":
             if not LINUX or ARM64:
                 raise SystemError(
@@ -486,6 +513,20 @@ class Exporter:
                 # EdgeTPU does not support FlexSplitV while split provides cleaner ONNX graph
                 m.forward = m.forward_split
 
+        if fmt == "onnx" and getattr(self.args, "etnms", False):
+            model = nn.Sequential(
+                model,
+                ONNX_EfficientNMS_TRT(
+                    class_agnostic=self.args.class_agnostic,
+                    max_obj=self.args.topk_all,
+                    iou_thres=self.args.iou_thres,
+                    score_thres=self.args.conf_thres,
+                    max_wh=None,
+                    device=self.device,
+                    n_classes=len(model.names),
+                ),
+            )
+
         y = None
         for _ in range(2):  # dry runs
             y = (
@@ -505,8 +546,13 @@ class Exporter:
             if isinstance(y, torch.Tensor)
             else tuple(tuple(x.shape if isinstance(x, torch.Tensor) else []) for x in y)
         )
-        self.pretty_name = Path(self.model.yaml.get("yaml_file", self.file)).stem.replace("yolo", "YOLO")
-        data = model.args["data"] if hasattr(model, "args") and isinstance(model.args, dict) else ""
+        _meta_model = model[0] if (fmt == "onnx" and getattr(self.args, "etnms", False)) else model
+        self.pretty_name = Path(_meta_model.yaml.get("yaml_file", self.file)).stem.replace("yolo", "YOLO")
+        data = (
+            _meta_model.args["data"]
+            if hasattr(_meta_model, "args") and isinstance(_meta_model.args, dict)
+            else ""
+        )
         description = f"Ultralytics {self.pretty_name} model {f'trained on {data}' if data else ''}"
         self.metadata = {
             "description": description,
@@ -515,21 +561,21 @@ class Exporter:
             "version": __version__,
             "license": "AGPL-3.0 License (https://ultralytics.com/license)",
             "docs": "https://docs.ultralytics.com",
-            "stride": int(max(model.stride)),
-            "task": model.task,
+            "stride": int(max(_meta_model.stride)),
+            "task": _meta_model.task,
             "batch": self.args.batch,
             "imgsz": self.imgsz,
-            "names": model.names,
+            "names": _meta_model.names,
             "args": {k: v for k, v in self.args if k in fmt_keys},
-            "channels": model.yaml.get("channels", 3),
-            "end2end": getattr(model, "end2end", False),
+            "channels": _meta_model.yaml.get("channels", 3),
+            "end2end": getattr(_meta_model, "end2end", False),
         }  # model metadata
         if self.dla is not None:
             self.metadata["dla"] = self.dla  # make sure `AutoBackend` uses correct dla device if it has one
-        if model.task == "pose":
-            self.metadata["kpt_shape"] = model.model[-1].kpt_shape
-            if hasattr(model, "kpt_names"):
-                self.metadata["kpt_names"] = model.kpt_names
+        if _meta_model.task == "pose":
+            self.metadata["kpt_shape"] = _meta_model.model[-1].kpt_shape
+            if hasattr(_meta_model, "kpt_names"):
+                self.metadata["kpt_names"] = _meta_model.kpt_names
 
         LOGGER.info(
             f"\n{colorstr('PyTorch:')} starting from '{file}' with input shape {tuple(im.shape)} BCHW and "
@@ -566,8 +612,8 @@ class Exporter:
             LOGGER.info(
                 f"\nExport complete ({time.time() - t:.1f}s)"
                 f"\nResults saved to {colorstr('bold', file.parent.resolve())}"
-                f"\nPredict:         yolo predict task={model.task} model={f} imgsz={imgsz} {q}"
-                f"\nValidate:        yolo val task={model.task} model={f} imgsz={imgsz} data={data} {q} {s}"
+                f"\nPredict:         yolo predict task={self._task_model().task} model={f} imgsz={imgsz} {q}"
+                f"\nValidate:        yolo val task={self._task_model().task} model={f} imgsz={imgsz} data={data} {q} {s}"
                 f"\nVisualize:       https://netron.app"
             )
 
@@ -577,12 +623,13 @@ class Exporter:
     def get_int8_calibration_dataloader(self, prefix=""):
         """Build and return a dataloader for calibration of INT8 models."""
         LOGGER.info(f"{prefix} collecting INT8 calibration images from 'data={self.args.data}'")
-        data = (check_cls_dataset if self.model.task == "classify" else check_det_dataset)(self.args.data)
+        tm = self._task_model()
+        data = (check_cls_dataset if tm.task == "classify" else check_det_dataset)(self.args.data)
         dataset = YOLODataset(
             data[self.args.split or "val"],
             data=data,
             fraction=self.args.fraction,
-            task=self.model.task,
+            task=tm.task,
             imgsz=max(self.imgsz),
             augment=False,
             batch_size=self.args.batch,
@@ -628,24 +675,43 @@ class Exporter:
 
         from ultralytics.utils.export.engine import best_onnx_opset, torch2onnx
 
+        if getattr(self.args, "etnms", False) and self.args.simplify:
+            LOGGER.warning(
+                f"{prefix} graph simplifiers may remove TensorRT EfficientNMS_TRT custom ops; setting simplify=False."
+            )
+            self.args.simplify = False
+
         opset = self.args.opset or best_onnx_opset(onnx, cuda="cuda" in self.device.type)
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset}...")
         if self.args.nms:
             assert TORCH_1_13, f"'nms=True' ONNX export requires torch>=1.13 (found torch=={TORCH_VERSION})"
 
         f = str(self.file.with_suffix(".onnx"))
-        output_names = ["output0", "output1"] if self.model.task == "segment" else ["output0"]
+        base = self.model[0] if getattr(self.args, "etnms", False) else self.model
+        if getattr(self.args, "etnms", False):
+            output_names = ["num_dets", "det_boxes", "det_scores", "det_classes"]
+        else:
+            output_names = ["output0", "output1"] if base.task == "segment" else ["output0"]
         dynamic = self.args.dynamic
         if dynamic:
             dynamic = {"images": {0: "batch", 2: "height", 3: "width"}}  # shape(1,3,640,640)
-            if isinstance(self.model, SegmentationModel):
+            if getattr(self.args, "etnms", False):
+                dynamic.update(
+                    {
+                        "num_dets": {0: "batch"},
+                        "det_boxes": {0: "batch"},
+                        "det_scores": {0: "batch"},
+                        "det_classes": {0: "batch"},
+                    }
+                )
+            elif isinstance(base, SegmentationModel):
                 dynamic["output0"] = {0: "batch", 2: "anchors"}  # shape(1, 116, 8400)
                 dynamic["output1"] = {0: "batch", 2: "mask_height", 3: "mask_width"}  # shape(1,32,160,160)
-            elif isinstance(self.model, DetectionModel):
+            elif isinstance(base, DetectionModel):
                 dynamic["output0"] = {0: "batch", 2: "anchors"}  # shape(1, 84, 8400)
             if self.args.nms:  # only batch size is dynamic with NMS
                 dynamic["output0"].pop(2)
-        if self.args.nms and self.model.task == "obb":
+        if self.args.nms and base.task == "obb":
             self.args.opset = opset  # for NMSModel
             self.args.simplify = True  # fix OBB runtime error related to topk
 

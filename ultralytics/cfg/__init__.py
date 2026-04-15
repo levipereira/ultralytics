@@ -244,6 +244,7 @@ CFG_BOOL_KEYS = frozenset(
         "dynamic",
         "simplify",
         "nms",
+        "etnms",
         "profile",
         "end2end",
     }
