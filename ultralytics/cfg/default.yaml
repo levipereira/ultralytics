@@ -81,24 +81,27 @@ show_boxes: True # (bool) draw bounding boxes on images
 line_width: # (int, optional) line width of boxes; auto-scales with image size if not set
 
 # Export settings ------------------------------------------------------------------------------------------------------
-format: torchscript # (str) target format, e.g. torchscript|onnx|onnx_trt|openvino|engine|coreml|saved_model|pb|tflite|edgetpu|tfjs|paddle|mnn|ncnn|imx|rknn|executorch|axelera
+format: torchscript # (str) target format, e.g. torchscript|onnx|openvino|engine|coreml|saved_model|pb|tflite|edgetpu|tfjs|paddle|mnn|ncnn|imx|rknn|executorch|axelera
 keras: False # (bool) TF SavedModel only (format=saved_model); enable Keras layers during export
 optimize: False # (bool) TorchScript only; apply mobile optimizations to the scripted model
 int8: False # (bool) INT8/PTQ where supported (openvino, engine, coreml, tflite, tfjs, mnn, imx, axelera); needs calibration data/fraction
-dynamic: False # (bool) dynamic shapes for torchscript, onnx, openvino, engine, coreml; enable variable image sizes
-simplify: True # (bool) ONNX/engine only; run graph simplifier for cleaner ONNX before runtime conversion
+dynamic: True # (bool) dynamic shapes for torchscript, onnx, openvino, engine, coreml; enable variable batch/spatial sizes (recommended for ONNX deployment)
+# When dynamic=True, imgsz and batch are only the trace/example shapes for ONNX (dynamic axes at runtime; not fixed sizes).
+simplify: True # (bool) ONNX/engine only; run graph simplifier for cleaner ONNX (onnx_output=enms may force simplify=False to keep EfficientNMS_TRT ops)
 opset: # (int, optional) ONNX/engine only; opset version for export; leave unset to use a tested default
 workspace: # (float, optional) engine (TensorRT) only; workspace size in GiB, e.g. 4
 nms: False # (bool) fuse NMS into exported model when backend supports; if True, conf/iou apply (agnostic_nms except coreml)
-etnms: False # (bool) ONNX only: append TensorRT EfficientNMS_TRT (requires TensorRT); use with end2end=False for raw boxes+scores
-# onnx_trt (TensorRT plugin) export extras
-topk_all: 100 # (int) max detections for onnx_trt / etnms export
-iou_thres: 0.45 # (float) IoU threshold for TensorRT EfficientNMS in onnx_trt export
-conf_thres: 0.25 # (float) confidence threshold for TensorRT EfficientNMS in onnx_trt export
-class_agnostic: False # (bool) class-agnostic NMS for onnx_trt export
-pooler_scale: 0.25 # (float) ROI pooler scale (segmentation onnx_trt)
-sampling_ratio: 0 # (int) ROIAlign sampling ratio (segmentation onnx_trt)
-mask_resolution: 160 # (int) mask output resolution (segmentation onnx_trt)
+etnms: False # (bool) legacy alias for onnx_output=enms (ONNX only)
+onnx_output: default # (str) ONNX only: default | ds_yolo | enms | emulated_enms | onnx_nms — std ONNX, DeepStream utils, EfficientNMS_TRT (deprecated), packed e2e, or onnx::NonMaxSuppression (TensorRT INMSLayer-friendly)
+input_tensor_name: images # (str) ONNX only: name of the graph input tensor (default images; e.g. input for some DeepStream samples)
+# ONNX extras (onnx_output ds_yolo | enms | emulated_enms | onnx_nms); onnx_output=enms|onnx_nms|ds_yolo implies end2end=False
+topk_all: 100 # (int) max detections for packed ONNX / enms export
+iou_thres: 0.45 # (float) IoU threshold for TensorRT EfficientNMS
+conf_thres: 0.25 # (float) confidence threshold for TensorRT EfficientNMS
+class_agnostic: False # (bool) class-agnostic NMS for packed ONNX / enms
+pooler_scale: 0.25 # (float) ROI pooler scale (segmentation packed ONNX)
+sampling_ratio: 0 # (int) ROIAlign sampling ratio (segmentation packed ONNX)
+mask_resolution: 160 # (int) mask output resolution (segmentation packed ONNX)
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 lr0: 0.01 # (float) initial learning rate (SGD=1e-2, Adam/AdamW=1e-3)

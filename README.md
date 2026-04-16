@@ -1,8 +1,35 @@
 # YOLO model export (ONNX / TensorRT)
 
-This repository is **for exporting trained YOLO weights** (for example `.pt`) to deployment formats only — in particular **ONNX** aimed at **NVIDIA TensorRT** and integrations such as **DeepStream**. It is not a replacement for full training or inference documentation; the scope here is the **export** pipeline.
+This repository is **for exporting trained YOLO weights** (for example `.pt`) to deployment formats only — in particular **ONNX** aimed at **NVIDIA TensorRT**, **ONNX Runtime**, and integrations such as **DeepStream**. It is not a replacement for full training or inference documentation; the scope here is the **export** pipeline.
 
 The codebase derives from the Ultralytics project (YOLOv8 / YOLO11 / YOLO26, etc.); the intended use in this fork is **export only**.
+
+## All supported export formats (`yolo export format=…`)
+
+These entries mirror `export_formats()` in `ultralytics/engine/exporter.py`. **GPU** indicates whether the exporter can use CUDA for that format; some formats still produce CPU-compatible artifacts.
+
+| Format | `format=` | Output suffix / path | CPU | GPU | Notable CLI args (subset) |
+|--------|-----------|----------------------|-----|-----|---------------------------|
+| PyTorch | *(already `.pt`)* | `.pt` | ✓ | ✓ | — |
+| TorchScript | `torchscript` | `.torchscript` | ✓ | ✓ | `batch`, `optimize`, `half`, `nms`, `dynamic` |
+| **ONNX** | **`onnx`** | **`.onnx`** | ✓ | ✓ | **`batch`, `dynamic`, `half`, `opset`, `simplify`, `nms`, `etnms`, `onnx_output`, `input_tensor_name`** |
+| OpenVINO | `openvino` | `_openvino_model` dir | ✓ | — | `batch`, `dynamic`, `half`, `int8`, `nms`, `fraction` |
+| TensorRT | `engine` | `.engine` | — | ✓ | `batch`, `dynamic`, `half`, `int8`, `simplify`, `nms`, `fraction` |
+| CoreML | `coreml` | `.mlpackage` | ✓ | — | `batch`, `dynamic`, `half`, `int8`, `nms` |
+| TensorFlow SavedModel | `saved_model` | `_saved_model` | ✓ | ✓ | `batch`, `int8`, `keras`, `nms` |
+| TensorFlow GraphDef | `pb` | `.pb` | ✓ | ✓ | `batch` |
+| TensorFlow Lite | `tflite` | `.tflite` | ✓ | — | `batch`, `half`, `int8`, `nms`, `fraction` |
+| Edge TPU | `edgetpu` | `_edgetpu.tflite` | ✓ | — | — |
+| TensorFlow.js | `tfjs` | `_web_model` | ✓ | — | `batch`, `half`, `int8`, `nms` |
+| PaddlePaddle | `paddle` | `_paddle_model` | ✓ | ✓ | `batch` |
+| MNN | `mnn` | `.mnn` | ✓ | ✓ | `batch`, `half`, `int8` |
+| NCNN | `ncnn` | `_ncnn_model` | ✓ | ✓ | `batch`, `half` |
+| IMX | `imx` | `_imx_model` | ✓ | ✓ | `int8`, `fraction`, `nms` |
+| RKNN | `rknn` | `_rknn_model` | — | — | `batch`, `name` |
+| ExecuTorch | `executorch` | `_executorch_model` | ✓ | — | `batch` |
+| Axelera AI | `axelera` | `_axelera_model` | — | — | `batch`, `int8`, `fraction`, `data` |
+
+**ONNX-specific options** (`onnx_output`, `input_tensor_name`, `etnms`, etc.) apply **only** when `format=onnx`; other formats ignore them (with a warning).
 
 ## Installation
 
@@ -19,105 +46,160 @@ From the repository root (with the code cloned), install the package with the ex
 pip install ".[export]"
 ```
 
-The `[export]` extra pulls ONNX-related dependencies (`onnx`, `onnxslim`, `onnxscript`, `onnx-graphsurgeon`, and others) needed for `format=onnx`, `onnx_trt`, and related tooling.
+The `[export]` extra pulls ONNX-related dependencies (`onnx`, `onnxslim`, `onnxscript`, `onnx-graphsurgeon`, and others) needed for `format=onnx` and all `onnx_output` variants below.
 
 Install **PyTorch** for your GPU/CPU (see [pytorch.org](https://pytorch.org/get-started/locally/)) before or after the step above, depending on your platform.
 
-## Export commands
+---
 
-### CLI (`yolo`)
+## ONNX export overview (`format=onnx`)
 
-Example — ONNX with TensorRT-oriented packaging (post-processing depends on the head type; see below):
+All paths use **`yolo export ... format=onnx`**. The layout is selected with **`onnx_output`** (see `ultralytics/cfg/default.yaml`).
+
+| `onnx_output` | Typical use | Graph input name | Artifact names |
+|---------------|-------------|------------------|----------------|
+| **`default`** | ONNX Runtime, OpenCV DNN, generic tooling | `input_tensor_name` (default **`images`**) | `<stem>.onnx` |
+| **`ds_yolo`** | DeepStream-Yolo utils (`models/DeepStream-Yolo/utils`) | `input_tensor_name` (default **`images`**; set `input_tensor_name=input` for older samples) | `<stem>_ds_yolo.onnx`, `<stem>_ds_yolo.txt` |
+| **`enms`** | TensorRT with **EfficientNMS_TRT** plugin | **`images`** via `input_tensor_name` | `<stem>_enms.onnx`, `<stem>_enms.txt` |
+| **`onnx_nms`** | TensorRT **INMSLayer** / portable **`onnx::NonMaxSuppression`** | **`images`** via `input_tensor_name` | `<stem>_onnx_nms.onnx`, `<stem>_onnx_nms.txt` |
+| **`emulated_enms`** | Packed four outputs on **end-to-end** detection heads only | **`images`** via `input_tensor_name` | `<stem>_emulated_enms.onnx`, `<stem>_emulated_enms.txt` |
+
+- Non-`default` modes also write a **`.txt`** label file next to the ONNX.
+- **`etnms=True`** is a legacy alias for **`onnx_output=enms`** (do not combine with conflicting `onnx_output`).
+
+### Implicit `end2end=False`
+
+For **`onnx_output`** ∈ **`enms`**, **`onnx_nms`**, or **`ds_yolo`**, the exporter sets **`end2end=False`** automatically (raw two-stage / DeepStream-style graphs). You do not need to pass `end2end=False` on the CLI.
+
+### `dynamic=True`, `imgsz`, and `batch`
+
+When **`dynamic=True`**, **`imgsz`** and **`batch`** are **trace / example dimensions** only: they shape the dummy tensor used during export. **Runtime** batch and height/width are **not** fixed to those values; the ONNX graph exposes dynamic axes where applicable. With **`dynamic=False`**, the traced shapes match `imgsz` and `batch` more tightly.
+
+### ONNX input tensor name
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| **`input_tensor_name`** | `images` | ONNX graph **input** tensor name. Override if your runtime or DeepStream config expects another name (e.g. `input_tensor_name=input`). |
+
+The **output** tensor name for **`ds_yolo`** remains **`output`** (DeepStream-Yolo convention).
+
+---
+
+## Parameter matrix (ONNX export)
+
+Cross-cutting parameters (all modes unless noted):
+
+| Parameter | Applies when | Role |
+|-----------|----------------|------|
+| **`model`** | always | Path to `.pt` weights |
+| **`format=onnx`** | always | ONNX export |
+| **`onnx_output`** | always | `default` \| `ds_yolo` \| `enms` \| `onnx_nms` \| `emulated_enms` |
+| **`imgsz`** | always | Export / trace image size (see **dynamic** note above) |
+| **`batch`** | always | Trace minibatch size (see **dynamic** note above) |
+| **`dynamic`** | always | If `True`, dynamic axes where supported; `imgsz`/`batch` are example dims |
+| **`opset`** | optional | ONNX opset (default: auto from ONNX + torch) |
+| **`simplify`** | optional | Graph slimming; may be forced **`False`** for `enms` / `onnx_nms` to keep custom/NMS nodes |
+| **`half`** | optional | FP16 export where supported |
+| **`input_tensor_name`** | optional | ONNX input name (default `images`) |
+| **`end2end`** | varies | **Forced `False`** (with `model.end2end=False`) for `enms`, `onnx_nms`, `ds_yolo`. For **`emulated_enms`**, the checkpoint must already be an **e2e detection head** (YOLOv10 / YOLO11 / YOLO26-style); the exporter validates this and does not use the same two-stage path as `enms`. |
+
+Mode-specific parameters:
+
+| Parameter | `default` | `ds_yolo` | `enms` | `onnx_nms` | `emulated_enms` |
+|-----------|-----------|-----------|--------|------------|-----------------|
+| **`topk_all`** | — | — | max boxes / plugin slots | maps to ONNX **max_output_boxes_per_class** | internal top‑K / slots |
+| **`iou_thres`** | — | — | EfficientNMS / TRT | ONNX **NonMaxSuppression** IoU | packed e2e path |
+| **`conf_thres`** | — | — | score threshold | ONNX **score_threshold** | packed e2e path |
+| **`class_agnostic`** | — | — | `enms` TRT path | — | — |
+| **`nms`** | optional fused NMS | forced off if set | incompatible → off | incompatible → off | — |
+| **Task** | detect / seg / pose / obb / classify | **detect only** | **detect only** | **detect only** | **detect only**, **e2e head** |
+| **Segmentation extras** (`pooler_scale`, …) | `default` seg + packed TRT seg if used | — | packed seg with plugins | — | — |
+
+**Mapping (`enms` / `onnx_nms`):** `topk_all` → max detections per class (plugin / ONNX NMS input); `iou_thres` → IoU threshold; `conf_thres` → score threshold.
+
+---
+
+## CLI examples
+
+**Standard Ultralytics ONNX** (`output0`, full upstream flags):
 
 ```bash
-yolo export model=path/to/model.pt format=onnx_trt dynamic=True topk_all=300
+yolo export model=yolo26n.pt format=onnx onnx_output=default imgsz=640 dynamic=True simplify=True
 ```
 
-Standard ONNX export (without the `onnx_trt` pipeline):
+**DeepStream-Yolo** (single `output`; no NMS in graph):
 
 ```bash
-yolo export model=path/to/model.pt format=onnx opset=20 simplify=True
+yolo export model=yolo26n.pt format=onnx onnx_output=ds_yolo imgsz=640 dynamic=True input_tensor_name=input
+```
+
+**EfficientNMS_TRT** (TensorRT plugin):
+
+```bash
+yolo export model=yolo26n.pt format=onnx onnx_output=enms imgsz=640 dynamic=True topk_all=100 iou_thres=0.45 conf_thres=0.25
+```
+
+**Standard ONNX NonMaxSuppression** (TensorRT INMSLayer–friendly, portable NMS op):
+
+```bash
+yolo export model=yolo26n.pt format=onnx onnx_output=onnx_nms imgsz=640 dynamic=True topk_all=100 iou_thres=0.45 conf_thres=0.25 input_tensor_name=images
+```
+
+**Packed four outputs on e2e heads** (YOLOv10 / YOLO11 / YOLO26-style):
+
+```bash
+yolo export model=yolo26n.pt format=onnx onnx_output=emulated_enms imgsz=640 dynamic=True topk_all=300
 ```
 
 ### `onnx_trt.py` (repository root)
 
-Thin wrapper around `YOLO(...).export(format="onnx_trt", ...)` with fixed `dynamic=True`:
+Wrapper around **`onnx_output=enms`** with `dynamic=True`. For e2e weights and packed export, use **`onnx_output=emulated_enms`** or **`onnx_nms`** via CLI/Python.
 
 ```bash
 python onnx_trt.py -w path/to/model.pt --topk_all 300
 ```
 
-Equivalent `yolo export` arguments include `topk_all=`, `iou_thres=`, `conf_thres=`, `class_agnostic`, `pooler_scale`, `sampling_ratio`, and `mask_resolution` (see `default.yaml` and export docs).
-
-#### `onnx_trt.py` arguments (important)
-
-These map directly to the exporter; choose them to match how you will build the TensorRT engine and parse outputs.
-
-| Argument | Type | Default | Description |
-| -------- | ---- | ------- | ----------- |
-| `-w` / `--weights` | str | *(required)* | Path to the `.pt` checkpoint. |
-| `--topk_all` | int | `100` | Maximum number of detections per image (slot count `K` in ONNX outputs). For end-to-end (NMS-free) heads, this sets the model’s internal top‑`K`; for YOLOv8-style exports it is also the EfficientNMS `max_output_boxes`. |
-| `--iou_thres` | float | `0.45` | IoU threshold for **EfficientNMS_TRT** (non–end-to-end detection and segmentation paths). Ignored for end-to-end detection heads where NMS is already inside the network. |
-| `--conf_thres` | float | `0.25` | Score threshold for **EfficientNMS_TRT** (non–end-to-end paths). Ignored for end-to-end detection heads. |
-| `--class_agnostic` | flag | off | If set, uses class-agnostic NMS in the TRT plugin path. Requires TensorRT **8.6+** for the corresponding plugin variant. |
-| `--pooler_scale` | float | `0.25` | **Segmentation only**: `spatial_scale` for ROIAlign in the export graph. |
-| `--sampling_ratio` | int | `0` | **Segmentation only**: ROIAlign sampling ratio (`0` = default). |
-| `--mask_resolution` | int | `160` | **Segmentation only**: height/width of mask crops before upsample (output mask vector length is `mask_resolution²`). |
-
-**Note — NMS-free / end-to-end models (e.g. YOLO26, YOLOv10, YOLOv11 with built-in top‑k):** only **`--topk_all`** (and `-w`) meaningfully change the exported detection graph. `--iou_thres`, `--conf_thres`, and `--class_agnostic` apply to exports that insert **EfficientNMS_TRT** (YOLOv8-style raw outputs). Segmentation models still use **`pooler_scale`**, **`sampling_ratio`**, and **`mask_resolution`** together with the NMS-related args.
+Arguments mirror **`topk_all`**, **`iou_thres`**, **`conf_thres`**, **`class_agnostic`**, and segmentation-related pooler args where applicable (see `default.yaml`).
 
 ### `export_yolo26.py` (repository root, optional)
 
-Alternative ONNX export path aimed at **DeepStream** (adapted head forward, simplified outputs). Example:
+Alternative script for a DeepStream-oriented graph; may differ from `yolo export format=onnx onnx_output=ds_yolo`.
 
 ```bash
 python export_yolo26.py -w path/to/model.pt -s 640 --opset 17
 ```
 
-This calls `torch.onnx.export` on a model prepared for that flow; the graph may differ from Ultralytics `format=onnx_trt`.
+---
 
-## How exports are produced
+## Output layouts (reference)
 
-### `format=onnx_trt` (and `onnx_trt.py`)
+### `onnx_output=default`
 
-- **Output files** (by default next to the `.pt`):  
-  - `<weights-stem>-trt.onnx` — ONNX graph for TensorRT;  
-  - `<weights-stem>-trt.txt` — label file (one class name per line).
+- **Files:** `<stem>.onnx`
+- **Outputs:** `output0` (and `output1` for segmentation), same as upstream Ultralytics.
 
-- **End-to-end heads (NMS / top-k inside the model)** — e.g. **YOLO26**, **YOLOv10**, **YOLOv11** with e2e outputs: the network already returns post-processed detections (top-k). Export **does not** insert the **EfficientNMS_TRT** plugin; the ONNX graph uses the standard ONNX domain and runs on TensorRT without that custom plugin.
+### `onnx_output` ∈ { `enms`, `onnx_nms` }
 
-- **YOLOv8-style heads (non-e2e)** — raw boxes and scores: export wraps the output with **EfficientNMS_TRT** in the ONNX graph for NVIDIA TensorRT plugins.
+- **Files:** `<stem>_<mode>.onnx`, `<stem>_<mode>.txt`
+- **Outputs:** `num_dets`, `det_boxes`, `det_scores`, `det_classes` (detection).
+- **Input:** NCHW tensor named per **`input_tensor_name`** (default **`images`**).
 
-- **Segmentation** — separate path (masks, ROI, etc.); TRT plugins follow the exporter implementation.
+### `onnx_output=ds_yolo`
 
-- Optional post-processing: ONNX simplification (`onnxsim` when available) and graph **cleanup** with **ONNX GraphSurgeon** when installed.
+- **Files:** `<stem>_ds_yolo.onnx`, `<stem>_ds_yolo.txt`
+- **I/O:** Input name = **`input_tensor_name`**; output name **`output`** (fixed). No NMS in the graph.
 
-### ONNX output tensors (`onnx_trt` detection)
+### `onnx_output=emulated_enms`
 
-The exported model has a single input named **`images`**: `NCHW`, typically `[batch, 3, H, W]` (dynamic batch and spatial sizes when `dynamic=True`).
+- **Files:** `<stem>_emulated_enms.onnx`, `<stem>_emulated_enms.txt`
+- **Outputs:** same four tensors as `enms`/`onnx_nms` naming; **only** valid for **end-to-end** detection heads (exporter validates).
+- Use a realistic **`imgsz`** (e.g. 640); very small sizes can break top‑K / packed export.
 
-**Detection** models expose **four** ONNX outputs (names fixed in the graph):
+### Segmentation
 
-| Output name | Typical shape | Description |
-| ----------- | -------------- | ----------- |
-| `num_dets` | `[batch, 1]` | Integer count of valid detections per image (exact semantics depend on the wrapper / plugin). |
-| `det_boxes` | `[batch, K, 4]` | `K = topk_all`. Four box values per slot. For **end-to-end** heads, values follow the model head (e.g. `x1,y1,x2,y2`). For **EfficientNMS_TRT**, coordinates follow the **TensorRT EfficientNMS** convention (center-style `xywh` feeding the plugin in the exporter). |
-| `det_scores` | `[batch, K]` | Confidence or class score for each slot. |
-| `det_classes` | `[batch, K]` | Class index per slot (floating-point in the traced graph; cast as needed). |
+Use **`onnx_output=default`** for standard two-head ONNX. The specialized non-default modes above target **detection** deployment layouts unless documented otherwise for a specific packed segmentation path.
 
-Pad or filter using `num_dets` and scores as in your TensorRT / deployment sample.
-
-**Segmentation** adds a fifth output:
-
-| Output name | Typical shape | Description |
-| ----------- | -------------- | ----------- |
-| `det_masks` | `[batch, K, mask_resolution²]` | Per-detection mask coefficients or rasterized mask strip (as produced by the ROIAlign + matmul path in the exporter). |
-
-Use the same `K` and `mask_resolution` you passed at export (`--topk_all`, `--mask_resolution`).
-
-### `format=onnx`
-
-Standard ONNX for ONNX Runtime, OpenCV DNN, etc., without the `onnx_trt`-specific packaging.
+---
 
 ## License
 

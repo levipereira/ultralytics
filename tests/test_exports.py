@@ -34,6 +34,40 @@ def test_export_onnx(end2end):
     YOLO(file)(SOURCE, imgsz=32)  # exported model inference
 
 
+@pytest.mark.skipif(not TORCH_1_13, reason="ONNX enms export requires torch>=1.13")
+def test_export_onnx_enms():
+    """Test ONNX export with TensorRT EfficientNMS_TRT nodes (not runnable in ONNX Runtime without TRT)."""
+    from pathlib import Path
+
+    file = YOLO(MODEL).export(
+        format="onnx", imgsz=32, end2end=False, onnx_output="enms", dynamic=False, simplify=False
+    )
+    assert Path(file).stat().st_size > 0
+
+
+@pytest.mark.skipif(not TORCH_1_13, reason="ONNX enms export requires torch>=1.13")
+def test_export_onnx_etnms_legacy_alias():
+    """Legacy etnms=True maps to onnx_output=enms."""
+    from pathlib import Path
+
+    file = YOLO(MODEL).export(format="onnx", imgsz=32, end2end=False, etnms=True, dynamic=False, simplify=False)
+    assert Path(file).stat().st_size > 0
+
+
+@pytest.mark.skipif(not TORCH_1_13, reason="ONNX onnx_nms export requires torch>=1.13")
+def test_export_onnx_onnx_nms():
+    """Test ONNX export with standard onnx::NonMaxSuppression (TensorRT INMSLayer-friendly)."""
+    import onnx
+    from pathlib import Path
+
+    file = YOLO(MODEL).export(
+        format="onnx", imgsz=32, end2end=False, onnx_output="onnx_nms", dynamic=False, simplify=False
+    )
+    assert Path(file).stat().st_size > 1000
+    model_onnx = onnx.load(file)
+    assert any(n.op_type == "NonMaxSuppression" for n in model_onnx.graph.node)
+
+
 def test_torch2onnx_serializes_concurrent_exports(monkeypatch, tmp_path):
     """Ensure ONNX exports do not overlap across worker threads."""
     active = 0

@@ -141,8 +141,24 @@ def export_formats():
     x = [
         ["PyTorch", "-", ".pt", True, True, []],
         ["TorchScript", "torchscript", ".torchscript", True, True, ["batch", "optimize", "half", "nms", "dynamic"]],
-        ["ONNX", "onnx", ".onnx", True, True, ["batch", "dynamic", "half", "opset", "simplify", "nms", "etnms"]],
-        ["ONNX TensorRT", "onnx_trt", "_trt.onnx", True, True, ["batch", "dynamic", "half", "opset", "simplify"]],
+        [
+            "ONNX",
+            "onnx",
+            ".onnx",
+            True,
+            True,
+            [
+                "batch",
+                "dynamic",
+                "half",
+                "opset",
+                "simplify",
+                "nms",
+                "etnms",
+                "onnx_output",
+                "input_tensor_name",
+            ],
+        ],
         [
             "OpenVINO",
             "openvino",
@@ -174,6 +190,23 @@ def export_formats():
         ["Axelera AI", "axelera", "_axelera_model", False, False, ["batch", "int8", "fraction", "data"]],
     ]
     return dict(zip(["Format", "Argument", "Suffix", "CPU", "GPU", "Arguments"], zip(*x)))
+
+
+ONNX_OUTPUT_MODES = frozenset({"default", "ds_yolo", "enms", "emulated_enms", "onnx_nms"})
+
+
+def is_v10_style_e2e_export(model) -> bool:
+    """Return True for YOLOv10-style / fused end-to-end detection heads (top-k inside the graph)."""
+    v10 = False
+    for m in model.modules():
+        if isinstance(m, v10Detect):
+            v10 = True
+            break
+    if not v10 and isinstance(model, DetectionModel):
+        head = model.model[-1]
+        if type(head) is Detect and getattr(head, "end2end", False):
+            v10 = True
+    return v10
 
 
 def validate_args(format, passed_args, valid_args):
@@ -291,6 +324,100 @@ class Exporter:
         if isinstance(m, nn.Sequential) and len(m) and hasattr(m[0], "task"):
             return m[0]
         return m
+
+    def _onnx_output_paths(self, tag: str) -> tuple[str, str]:
+        """Return ``({stem}_{tag}.onnx``, ``{stem}_{tag}.txt``) beside the source weights."""
+        stem, parent = self.file.stem, self.file.parent
+        base = parent / f"{stem}_{tag}"
+        return str(base.with_suffix(".onnx")), str(base.with_suffix(".txt"))
+
+    def _onnx_input_tensor_name(self) -> str:
+        """Return ONNX graph input tensor name (default ``images``)."""
+        name = getattr(self.args, "input_tensor_name", None) or "images"
+        if not isinstance(name, str):
+            name = str(name)
+        name = name.strip()
+        return name if name else "images"
+
+    def _configure_onnx_output(self, model, fmt: str) -> None:
+        """Normalize ``onnx_output``, apply ``etnms`` legacy mapping, and set packed-ONNX export flags."""
+        self._onnx_packed_export = False
+        self._onnx_ds_yolo_export = False
+        if fmt != "onnx":
+            oo_other = getattr(self.args, "onnx_output", "default") or "default"
+            if oo_other not in (None, "default"):
+                LOGGER.warning(f"ignoring onnx_output={oo_other!r} for format={fmt!r}.")
+            self.args.onnx_output = "default"
+            self._onnx_ds_yolo_export = False
+            return
+
+        oo = getattr(self.args, "onnx_output", "default") or "default"
+        if not isinstance(oo, str):
+            oo = str(oo)
+        oo = oo.strip().lower() or "default"
+
+        if getattr(self.args, "etnms", False):
+            if oo not in ("default", "enms"):
+                raise ValueError("etnms=True conflicts with onnx_output; use onnx_output=enms or omit etnms.")
+            oo = "enms"
+
+        if oo not in ONNX_OUTPUT_MODES:
+            raise ValueError(f"Invalid onnx_output={oo!r}. Valid modes: {sorted(ONNX_OUTPUT_MODES)}.")
+
+        if oo == "default":
+            self.args.onnx_output = "default"
+            return
+
+        if oo == "enms":
+            if not isinstance(model, DetectionModel) or model.task != "detect":
+                raise ValueError("onnx_output='enms' is only supported for detection models.")
+            if self.args.nms:
+                LOGGER.warning("onnx_output=enms is incompatible with nms=True; setting nms=False.")
+                self.args.nms = False
+            model.end2end = False
+            self.args.end2end = False
+            assert TORCH_1_13, f"onnx_output=enms requires torch>=1.13 (found torch=={TORCH_VERSION})"
+            self.args.conf = self.args.conf or 0.25
+            self.args.onnx_output = "enms"
+            return
+
+        if oo == "onnx_nms":
+            if not isinstance(model, DetectionModel) or model.task != "detect":
+                raise ValueError("onnx_output='onnx_nms' is only supported for detection models.")
+            if self.args.nms:
+                LOGGER.warning("onnx_output=onnx_nms is incompatible with nms=True; setting nms=False.")
+                self.args.nms = False
+            model.end2end = False
+            self.args.end2end = False
+            assert TORCH_1_13, f"onnx_output=onnx_nms requires torch>=1.13 (found torch=={TORCH_VERSION})"
+            self.args.conf = self.args.conf or 0.25
+            self.args.onnx_output = "onnx_nms"
+            return
+
+        if oo == "ds_yolo":
+            if model.task != "detect":
+                raise ValueError("onnx_output='ds_yolo' is only supported for detection models (DeepStream-Yolo utils).")
+            if self.args.nms:
+                LOGGER.warning("onnx_output=ds_yolo is incompatible with nms=True; setting nms=False.")
+                self.args.nms = False
+            model.end2end = False
+            self.args.end2end = False
+            self._onnx_ds_yolo_export = True
+            self.args.onnx_output = "ds_yolo"
+            return
+
+        if oo == "emulated_enms":
+            if model.task != "detect":
+                raise ValueError("onnx_output='emulated_enms' is only supported for detection models.")
+            if not is_v10_style_e2e_export(model):
+                raise ValueError(
+                    "onnx_output='emulated_enms' requires an end-to-end detection head (YOLOv10 / YOLO11 / YOLO26-style). "
+                    "Use onnx_output='enms' (EfficientNMS_TRT), onnx_output='onnx_nms' (onnx::NonMaxSuppression), "
+                    "onnx_output='ds_yolo' for DeepStream-Yolo, or onnx_output='default' for standard Ultralytics ONNX."
+                )
+            self._onnx_packed_export = True
+            self.args.onnx_output = "emulated_enms"
+            return
 
     def __call__(self, model=None) -> str:
         """Export a model and return the final exported path as a string.
@@ -410,27 +537,21 @@ class Exporter:
                 LOGGER.warning("'nms=True' is not available for end2end models. Forcing 'nms=False'.")
                 self.args.nms = False
             self.args.conf = self.args.conf or 0.25  # set conf default value for nms export
-        if getattr(self.args, "etnms", False):
-            assert fmt == "onnx", "etnms=True is only supported for format=onnx"
-            assert isinstance(model, DetectionModel) and model.task == "detect", (
-                "etnms=True is only supported for detection models."
-            )
-            if self.args.nms:
-                LOGGER.warning("etnms=True is incompatible with nms=True; setting nms=False.")
-                self.args.nms = False
-            if getattr(model, "end2end", False) or isinstance(model.model[-1], RTDETRDecoder):
-                LOGGER.warning("etnms=True requires raw one2many detection output; setting end2end=False.")
-            model.end2end = False
-            assert TORCH_1_13, f"'etnms=True' ONNX export requires torch>=1.13 (found torch=={TORCH_VERSION})"
-            self.args.conf = self.args.conf or 0.25  # score threshold for EfficientNMS_TRT
+        self._configure_onnx_output(model, fmt)
         if (
-            fmt in {"engine", "coreml"} or self.args.nms or getattr(self.args, "etnms", False)
+            fmt in {"engine", "coreml"}
+            or self.args.nms
+            or (
+                fmt == "onnx"
+                and getattr(self.args, "onnx_output", "default") in {"enms", "onnx_nms", "ds_yolo"}
+            )
         ) and self.args.dynamic and self.args.batch == 1:
+            _oo_dyn = getattr(self.args, "onnx_output", "default") if fmt == "onnx" else "default"
             tag = (
                 "nms=True"
                 if self.args.nms
-                else "etnms=True"
-                if getattr(self.args, "etnms", False)
+                else f"onnx_output={_oo_dyn}"
+                if fmt == "onnx" and _oo_dyn in {"enms", "onnx_nms", "ds_yolo"}
                 else f"format={self.args.format}"
             )
             LOGGER.warning(f"'dynamic=True' model with '{tag}' requires max batch size, i.e. 'batch=16'")
@@ -513,7 +634,8 @@ class Exporter:
                 # EdgeTPU does not support FlexSplitV while split provides cleaner ONNX graph
                 m.forward = m.forward_split
 
-        if fmt == "onnx" and getattr(self.args, "etnms", False):
+        _oo = getattr(self.args, "onnx_output", "default") if fmt == "onnx" else "default"
+        if fmt == "onnx" and _oo == "enms":
             model = nn.Sequential(
                 model,
                 ONNX_EfficientNMS_TRT(
@@ -526,15 +648,28 @@ class Exporter:
                     n_classes=len(model.names),
                 ),
             )
+        if fmt == "onnx" and _oo == "onnx_nms":
+            from ultralytics.utils.export.onnx_nonmaxsuppression import ONNX_NMS
 
+            model = nn.Sequential(
+                model,
+                ONNX_NMS(
+                    max_obj=self.args.topk_all,
+                    iou_thres=self.args.iou_thres,
+                    score_thres=self.args.conf_thres,
+                    device=self.device,
+                    n_classes=len(model.names),
+                ),
+            )
+        _onnx_fused_post = fmt == "onnx" and _oo in {"enms", "onnx_nms", "ds_yolo", "emulated_enms"}
         y = None
         for _ in range(2):  # dry runs
             y = (
                 NMSModel(model, self.args)(im)
-                if self.args.nms and fmt not in {"coreml", "imx", "onnx_trt"}
+                if self.args.nms and fmt not in {"coreml", "imx"} and not _onnx_fused_post
                 else model(im)
             )
-        if self.args.half and fmt in {"onnx", "onnx_trt", "torchscript"} and self.device.type != "cpu":
+        if self.args.half and fmt in {"onnx", "torchscript"} and self.device.type != "cpu":
             im, model = im.half(), model.half()  # to FP16
 
         # Assign
@@ -546,7 +681,11 @@ class Exporter:
             if isinstance(y, torch.Tensor)
             else tuple(tuple(x.shape if isinstance(x, torch.Tensor) else []) for x in y)
         )
-        _meta_model = model[0] if (fmt == "onnx" and getattr(self.args, "etnms", False)) else model
+        _meta_model = (
+            model[0]
+            if (fmt == "onnx" and _oo in {"enms", "onnx_nms"} and isinstance(model, nn.Sequential))
+            else model
+        )
         self.pretty_name = Path(_meta_model.yaml.get("yaml_file", self.file)).stem.replace("yolo", "YOLO")
         data = (
             _meta_model.args["data"]
@@ -667,6 +806,11 @@ class Exporter:
     @try_export
     def export_onnx(self, prefix=colorstr("ONNX:")):
         """Export YOLO model to ONNX format."""
+        if getattr(self, "_onnx_ds_yolo_export", False):
+            return self._export_onnx_ds_yolo(prefix)
+        if getattr(self, "_onnx_packed_export", False):
+            return self._export_onnx_packed_trt_layout(prefix)
+
         requirements = ["onnx>=1.12.0,<2.0.0"]
         if self.args.simplify:
             requirements += ["onnxslim>=0.1.71", "onnxruntime" + ("-gpu" if torch.cuda.is_available() else "")]
@@ -675,9 +819,15 @@ class Exporter:
 
         from ultralytics.utils.export.engine import best_onnx_opset, torch2onnx
 
-        if getattr(self.args, "etnms", False) and self.args.simplify:
+        _oo = getattr(self.args, "onnx_output", "default")
+        if _oo == "enms" and self.args.simplify:
             LOGGER.warning(
                 f"{prefix} graph simplifiers may remove TensorRT EfficientNMS_TRT custom ops; setting simplify=False."
+            )
+            self.args.simplify = False
+        if _oo == "onnx_nms" and self.args.simplify:
+            LOGGER.warning(
+                f"{prefix} graph simplifiers may remove onnx::NonMaxSuppression subgraph; setting simplify=False."
             )
             self.args.simplify = False
 
@@ -686,16 +836,27 @@ class Exporter:
         if self.args.nms:
             assert TORCH_1_13, f"'nms=True' ONNX export requires torch>=1.13 (found torch=={TORCH_VERSION})"
 
-        f = str(self.file.with_suffix(".onnx"))
-        base = self.model[0] if getattr(self.args, "etnms", False) else self.model
-        if getattr(self.args, "etnms", False):
+        in_name = self._onnx_input_tensor_name()
+        if self.args.dynamic:
+            LOGGER.info(
+                f"{prefix} dynamic=True: imgsz={self.imgsz} and batch={self.args.batch} are trace/example dimensions only; "
+                f"runtime shapes are not fixed (ONNX input name '{in_name}')."
+            )
+
+        _four_out = _oo in {"enms", "onnx_nms"}
+        if _oo != "default":
+            f, _ = self._onnx_output_paths(_oo)
+        else:
+            f = str(self.file.with_suffix(".onnx"))
+        base = self.model[0] if _four_out else self.model
+        if _four_out:
             output_names = ["num_dets", "det_boxes", "det_scores", "det_classes"]
         else:
             output_names = ["output0", "output1"] if base.task == "segment" else ["output0"]
         dynamic = self.args.dynamic
         if dynamic:
-            dynamic = {"images": {0: "batch", 2: "height", 3: "width"}}  # shape(1,3,640,640)
-            if getattr(self.args, "etnms", False):
+            dynamic = {in_name: {0: "batch", 2: "height", 3: "width"}}  # shape(1,3,640,640)
+            if _four_out:
                 dynamic.update(
                     {
                         "num_dets": {0: "batch"},
@@ -721,9 +882,10 @@ class Exporter:
                 self.im,
                 f,
                 opset=opset,
-                input_names=["images"],
+                input_names=[in_name],
                 output_names=output_names,
                 dynamic=dynamic or None,
+                do_constant_folding=_oo != "onnx_nms",
             )
 
         # Checks
@@ -764,11 +926,92 @@ class Exporter:
         return f
 
     @try_export
-    def export_onnx_trt(self, prefix=colorstr("ONNX TensorRT:")):
-        """Export YOLO model to ONNX for TensorRT (format=onnx_trt).
+    def _export_onnx_ds_yolo(self, prefix=colorstr("ONNX:")):
+        """Export ONNX in DeepStream-Yolo layout (``models/DeepStream-Yolo/utils``): ``input`` / ``output``, no NMS."""
+        requirements = ["onnx>=1.12.0,<2.0.0"]
+        if self.args.simplify:
+            requirements += ["onnxslim>=0.1.71", "onnxruntime" + ("-gpu" if torch.cuda.is_available() else "")]
+        check_requirements(requirements)
+        import onnx
 
-        Uses EfficientNMS_TRT only for heads that output raw boxes+scores (e.g. YOLOv8). YOLOv10/11/26 end-to-end heads
-        already include top-k in the graph; those exports omit the plugin (same path as v10).
+        from ultralytics.utils.export.deepstream_yolo import (
+            DeepStreamOutput,
+            deepstream_tal_dist2bbox_patch,
+            prepare_detection_model_deepstream,
+        )
+        from ultralytics.utils.export.engine import best_onnx_opset
+
+        f, label_file = self._onnx_output_paths("ds_yolo")
+        if len(self.model.names.keys()) > 0:
+            with open(label_file, "w", encoding="utf-8") as f_lbl:
+                for name in self.model.names.values():
+                    f_lbl.write(f"{name}\n")
+            LOGGER.info(f"{prefix} wrote labels to '{label_file}'.")
+
+        opset_version = self.args.opset or best_onnx_opset(onnx, cuda="cuda" in self.device.type)
+        LOGGER.info(f"\n{prefix} DeepStream-Yolo ONNX export, onnx {onnx.__version__} opset {opset_version}...")
+
+        model = deepcopy(self.model)
+        prepare_detection_model_deepstream(model)
+        model = nn.Sequential(model, DeepStreamOutput())
+        model.eval()
+        im_x = self.im.cpu()
+        model = model.cpu()
+        if self.args.half:
+            im_x, model = im_x.half(), model.half()
+
+        in_name = self._onnx_input_tensor_name()
+        if self.args.dynamic:
+            LOGGER.info(
+                f"{prefix} dynamic=True: imgsz={self.imgsz} and batch={self.args.batch} are trace/example dimensions only "
+                f"(ONNX input '{in_name}')."
+            )
+        dynamic_axes = {in_name: {0: "batch"}, "output": {0: "batch"}} if self.args.dynamic else None
+        onnx_kwargs = {"dynamo": False} if TORCH_2_4 else {}
+        with deepstream_tal_dist2bbox_patch():
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Exporting aten::index operator of advanced indexing",
+                    category=UserWarning,
+                )
+                torch.onnx.export(
+                    model,
+                    im_x,
+                    f,
+                    verbose=False,
+                    export_params=True,
+                    opset_version=opset_version,
+                    do_constant_folding=True,
+                    input_names=[in_name],
+                    output_names=["output"],
+                    dynamic_axes=dynamic_axes,
+                    **onnx_kwargs,
+                )
+
+        model_onnx = onnx.load(f)
+        if self.args.simplify:
+            try:
+                import onnxslim
+
+                LOGGER.info(f"{prefix} slimming with onnxslim {onnxslim.__version__}...")
+                model_onnx = onnxslim.slim(model_onnx)
+            except Exception as e:
+                LOGGER.warning(f"{prefix} simplifier failure: {e}")
+        for k, v in self.metadata.items():
+            meta = model_onnx.metadata_props.add()
+            meta.key, meta.value = k, str(v)
+        if getattr(model_onnx, "ir_version", 0) > 10:
+            model_onnx.ir_version = 10
+        onnx.save(model_onnx, f)
+        return f
+
+    @try_export
+    def _export_onnx_packed_trt_layout(self, prefix=colorstr("ONNX:")):
+        """Export ONNX with packed TRT-style four outputs for ``onnx_output=emulated_enms`` (end-to-end heads only).
+
+        Uses EfficientNMS_TRT only for heads that output raw boxes+scores (e.g. YOLOv8). End-to-end heads (YOLOv10 / 11 /
+        26-style) already include top-k in the graph; those exports omit the extra EfficientNMS stage in the v10 path.
         """
         requirements = ["onnx>=1.12.0,<2.0.0"]
         if self.args.simplify:
@@ -778,34 +1021,30 @@ class Exporter:
         import onnx  # noqa
         from ultralytics.utils.export.engine import best_onnx_opset, patch_onnx_helper_for_graphsurgeon
 
+        oo_tag = getattr(self.args, "onnx_output", "emulated_enms")
+        f, label_file = self._onnx_output_paths(oo_tag)
         labels = len(self.model.names)
         is_det_model = True
-        # v10 / YOLO11 / YOLO26: head already applies top-k (internal "NMS"); ONNX must not add EfficientNMS_TRT.
-        v10detect = False
-        for m in self.model.modules():
-            if isinstance(m, v10Detect):
-                v10detect = True
-                break
-        if not v10detect:
-            head = self.model.model[-1]
-            if isinstance(self.model, DetectionModel) and type(head) is Detect and head.end2end:
-                v10detect = True
+        v10detect = is_v10_style_e2e_export(self.model)
 
         if len(self.model.names.keys()) > 0:
-            label_file = os.path.splitext(str(self.file))[0] + "-trt.txt"
-            with open(label_file, "w") as f_trt:
+            with open(label_file, "w", encoding="utf-8") as f_trt:
                 for name in self.model.names.values():
-                    f_trt.write(name + "\n")
-            LOGGER.info(f"{prefix} Successfully generated the label file: '{label_file}'.")
+                    f_trt.write(f"{name}\n")
+            LOGGER.info(f"{prefix} wrote labels to '{label_file}'.")
 
         opset_version = self.args.opset or best_onnx_opset(onnx, cuda="cuda" in self.device.type)
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
 
-        f = os.path.splitext(str(self.file))[0] + "-trt.onnx"
-
         batch_size = "batch"
         dynamic = self.args.dynamic
-        dynamic_axes = {"images": {0: "batch", 2: "height", 3: "width"}}  # variable length axes
+        in_name = self._onnx_input_tensor_name()
+        if dynamic:
+            LOGGER.info(
+                f"{prefix} dynamic=True: imgsz={self.imgsz} and batch={self.args.batch} are trace/example dimensions only "
+                f"(ONNX input '{in_name}')."
+            )
+        dynamic_axes = {in_name: {0: "batch", 2: "height", 3: "width"}}  # variable length axes
         output_axes = {
             "num_dets": {0: "batch"},
             "det_boxes": {0: "batch"},
@@ -926,7 +1165,7 @@ class Exporter:
                 export_params=True,
                 opset_version=opset_version,
                 do_constant_folding=True,
-                input_names=["images"],
+                input_names=[in_name],
                 output_names=output_names,
                 dynamic_axes=dynamic_axes,
                 **onnx_kwargs,
@@ -953,8 +1192,6 @@ class Exporter:
         except Exception as e:
             LOGGER.info(f"\n{prefix} Simplifier failure: {e}")
 
-        onnx.save(model_onnx, f)
-
         check_requirements("onnx_graphsurgeon")
         LOGGER.info(f"\n{prefix} Starting to cleanup ONNX using onnx_graphsurgeon...")
         try:
@@ -966,7 +1203,8 @@ class Exporter:
             model_onnx = gs.export_onnx(graph)
         except Exception as e:
             LOGGER.info(f"\n{prefix} Cleanup failure: {e}")
-        return f, model_onnx
+        onnx.save(model_onnx, f)
+        return f
 
     @try_export
     def export_openvino(self, prefix=colorstr("OpenVINO:")):

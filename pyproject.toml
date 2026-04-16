@@ -93,7 +93,7 @@ export = [
     "onnx>=1.12.0,<1.18.0; platform_system == 'Darwin'",  # TF inference hanging on MacOS (tested up to onnx==1.20.0)
     "onnxscript>=0.1.0", # ONNX scripting / dynamo export tooling
     "onnxslim>=0.1.82",
-    "onnx-graphsurgeon>=0.3.26", # ONNX graph cleanup (onnx_trt export); import name onnx_graphsurgeon
+    "onnx-graphsurgeon>=0.3.26", # ONNX graph cleanup (packed ONNX export); import name onnx_graphsurgeon
     "coremltools>=9.0; platform_system != 'Windows' and python_version <= '3.13'", # CoreML supported on macOS and Linux
     "scikit-learn>=1.3.2; platform_system != 'Windows' and python_version <= '3.13'", # CoreML k-means quantization
     "openvino>=2024.0.0",  # OpenVINO export
