@@ -1,8 +1,11 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-"""Standard ONNX ``NonMaxSuppression`` op for detection export (TensorRT ``INMSLayer`` / ONNX Runtime).
+"""Standard ONNX ``NonMaxSuppression`` op for detection export.
 
-Replaces the deprecated ``EfficientNMS_TRT`` plugin path with the portable ``onnx::NonMaxSuppression`` operator
-(https://onnx.ai/onnx/operators/onnx__NonMaxSuppression.html). Use ``onnx_output=onnx_nms`` in ``Exporter``.
+TensorRT maps this operator to ``nvinfer1::INMSLayer`` when building an engine from ONNX; see NVIDIA’s INMSLayer I/O
+(https://docs.nvidia.com/deeplearning/tensorrt/archives/tensorrt-861/api/c_api/classnvinfer1_1_1_i_n_m_s_layer.html).
+The exporter then packs **SelectedIndices**-style results into ``num_dets`` / ``det_*`` for parity with ``enms``.
+
+Operator spec: https://onnx.ai/onnx/operators/onnx__NonMaxSuppression.html — use ``onnx_output=onnx_nms`` in ``Exporter``.
 """
 
 from __future__ import annotations
