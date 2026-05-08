@@ -142,7 +142,14 @@ def export_formats():
         ["PyTorch", "-", ".pt", True, True, []],
         ["TorchScript", "torchscript", ".torchscript", True, True, ["batch", "optimize", "half", "nms", "dynamic"]],
         ["ONNX", "onnx", ".onnx", True, True, ["batch", "dynamic", "half", "opset", "simplify", "nms", "etnms"]],
-        ["ONNX TensorRT", "onnx_trt", "_trt.onnx", True, True, ["batch", "dynamic", "half", "opset", "simplify"]],
+        [
+            "ONNX TensorRT",
+            "onnx_trt",
+            "_trt.onnx",
+            True,
+            True,
+            ["batch", "dynamic", "half", "opset", "simplify", "trt_efficient_nms"],
+        ],
         [
             "OpenVINO",
             "openvino",
@@ -290,6 +297,10 @@ class Exporter:
         m = self.model
         if isinstance(m, nn.Sequential) and len(m) and hasattr(m[0], "task"):
             return m[0]
+        # onnx_trt wraps with End2End_TRT (DetectionModel inside .model)
+        inner = getattr(m, "model", None)
+        if inner is not None and hasattr(inner, "task") and type(m).__name__ == "End2End_TRT":
+            return inner
         return m
 
     def __call__(self, model=None) -> str:
@@ -767,8 +778,9 @@ class Exporter:
     def export_onnx_trt(self, prefix=colorstr("ONNX TensorRT:")):
         """Export YOLO model to ONNX for TensorRT (format=onnx_trt).
 
-        Uses EfficientNMS_TRT only for heads that output raw boxes+scores (e.g. YOLOv8). YOLOv10/11/26 end-to-end heads
-        already include top-k in the graph; those exports omit the plugin (same path as v10).
+        Uses EfficientNMS_TRT only for heads that output raw boxes+scores (e.g. YOLOv8), or when ``trt_efficient_nms=True``.
+        Otherwise YOLOv10/11/26 end-to-end heads export in-graph top-k (no plugin). Use ``trt_efficient_nms=True`` for
+        older TensorRT ONNX parsers that cannot run that graph.
         """
         requirements = ["onnx>=1.12.0,<2.0.0"]
         if self.args.simplify:
@@ -790,6 +802,14 @@ class Exporter:
             head = self.model.model[-1]
             if isinstance(self.model, DetectionModel) and type(head) is Detect and head.end2end:
                 v10detect = True
+
+        if getattr(self.args, "trt_efficient_nms", False):
+            if v10detect:
+                LOGGER.info(
+                    f"{prefix} trt_efficient_nms=True — exporting raw box/score tensors with EfficientNMS_TRT "
+                    f"(disables in-graph end-to-end TopK for legacy TensorRT)."
+                )
+            v10detect = False
 
         if len(self.model.names.keys()) > 0:
             label_file = os.path.splitext(str(self.file))[0] + "-trt.txt"

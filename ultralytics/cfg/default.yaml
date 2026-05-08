@@ -99,6 +99,7 @@ class_agnostic: False # (bool) class-agnostic NMS for onnx_trt export
 pooler_scale: 0.25 # (float) ROI pooler scale (segmentation onnx_trt)
 sampling_ratio: 0 # (int) ROIAlign sampling ratio (segmentation onnx_trt)
 mask_resolution: 160 # (int) mask output resolution (segmentation onnx_trt)
+trt_efficient_nms: False # (bool) onnx_trt only: raw boxes+scores + EfficientNMS_TRT (use when TensorRT lacks e2e TopK support)
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 lr0: 0.01 # (float) initial learning rate (SGD=1e-2, Adam/AdamW=1e-3)

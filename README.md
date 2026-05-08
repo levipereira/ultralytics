@@ -33,6 +33,15 @@ Example — ONNX with TensorRT-oriented packaging (post-processing depends on th
 yolo export model=path/to/model.pt format=onnx_trt dynamic=True topk_all=300
 ```
 
+**Older TensorRT / ONNX parser** — if building the engine fails on **TopK** (e.g. `axis=-1`) or other end-to-end ops, force **raw detections + EfficientNMS_TRT** instead of in-graph top‑k:
+
+```bash
+yolo export model=path/to/model.pt format=onnx_trt dynamic=True topk_all=300 \
+  trt_efficient_nms=True iou_thres=0.45 conf_thres=0.25
+```
+
+In that mode, `iou_thres`, `conf_thres`, and `class_agnostic` apply like on YOLOv8-style exports; outputs follow the four-tensor **EfficientNMS** layout (see tables below).
+
 Standard ONNX export (without the `onnx_trt` pipeline):
 
 ```bash
@@ -47,7 +56,7 @@ Thin wrapper around `YOLO(...).export(format="onnx_trt", ...)` with fixed `dynam
 python onnx_trt.py -w path/to/model.pt --topk_all 300
 ```
 
-Equivalent `yolo export` arguments include `topk_all=`, `iou_thres=`, `conf_thres=`, `class_agnostic`, `pooler_scale`, `sampling_ratio`, and `mask_resolution` (see `default.yaml` and export docs).
+Equivalent `yolo export` arguments include `topk_all=`, `iou_thres=`, `conf_thres=`, `class_agnostic`, `trt_efficient_nms`, `pooler_scale`, `sampling_ratio`, and `mask_resolution` (see `default.yaml` and export docs).
 
 #### `onnx_trt.py` arguments (important)
 
@@ -63,8 +72,9 @@ These map directly to the exporter; choose them to match how you will build the 
 | `--pooler_scale` | float | `0.25` | **Segmentation only**: `spatial_scale` for ROIAlign in the export graph. |
 | `--sampling_ratio` | int | `0` | **Segmentation only**: ROIAlign sampling ratio (`0` = default). |
 | `--mask_resolution` | int | `160` | **Segmentation only**: height/width of mask crops before upsample (output mask vector length is `mask_resolution²`). |
+| `trt_efficient_nms` | bool | `False` | Not a **`onnx_trt.py`** CLI flag — pass **`trt_efficient_nms=True`** via **`yolo export`** (see above) or extend **`model.export(...)`** in `onnx_trt.py`. When `True`, forces **EfficientNMS_TRT** for models that would otherwise export end-to-end top‑k (e.g. **YOLO26**). |
 
-**Note — NMS-free / end-to-end models (e.g. YOLO26, YOLOv10, YOLOv11 with built-in top‑k):** only **`--topk_all`** (and `-w`) meaningfully change the exported detection graph. `--iou_thres`, `--conf_thres`, and `--class_agnostic` apply to exports that insert **EfficientNMS_TRT** (YOLOv8-style raw outputs). Segmentation models still use **`pooler_scale`**, **`sampling_ratio`**, and **`mask_resolution`** together with the NMS-related args.
+**Note — NMS-free / end-to-end models (e.g. YOLO26, YOLOv10, YOLOv11 with built-in top‑k):** by default, only **`--topk_all`** (and `-w`) meaningfully change the exported detection graph; **`--iou_thres`**, **`--conf_thres`**, and **`--class_agnostic`** are ignored (NMS is inside the network). If you set **`trt_efficient_nms=True`**, the exporter switches to **YOLOv8-style raw outputs + EfficientNMS_TRT**, and then **`topk_all`**, **`iou_thres`**, **`conf_thres`**, and **`class_agnostic`** all apply. Segmentation models still use **`pooler_scale`**, **`sampling_ratio`**, and **`mask_resolution`** together with the NMS-related args when applicable.
 
 ### `export_yolo26.py` (repository root, optional)
 
@@ -84,13 +94,17 @@ This calls `torch.onnx.export` on a model prepared for that flow; the graph may 
   - `<weights-stem>-trt.onnx` — ONNX graph for TensorRT;  
   - `<weights-stem>-trt.txt` — label file (one class name per line).
 
-- **End-to-end heads (NMS / top-k inside the model)** — e.g. **YOLO26**, **YOLOv10**, **YOLOv11** with e2e outputs: the network already returns post-processed detections (top-k). Export **does not** insert the **EfficientNMS_TRT** plugin; the ONNX graph uses the standard ONNX domain and runs on TensorRT without that custom plugin.
+- **End-to-end heads (NMS / top-k inside the model)** — e.g. **YOLO26**, **YOLOv10**, **YOLOv11** with e2e outputs (default): the network returns post-processed detections (top-k). Export **does not** insert the **EfficientNMS_TRT** plugin; the ONNX graph uses standard ONNX ops (including **TopK**). This needs a TensorRT / ONNX stack that can parse that graph.
 
-- **YOLOv8-style heads (non-e2e)** — raw boxes and scores: export wraps the output with **EfficientNMS_TRT** in the ONNX graph for NVIDIA TensorRT plugins.
+- **`trt_efficient_nms=True` (this fork)** — for **detection** models that would otherwise use the e2e path, forces **raw box/score tensors** and appends the **EfficientNMS_TRT** plugin (same idea as YOLOv8-style export). Use this when your TensorRT version cannot build an engine from the default e2e ONNX (e.g. **TopK** / axis handling). **`iou_thres`**, **`conf_thres`**, **`topk_all`**, and **`class_agnostic`** then apply to the plugin.
+
+- **YOLOv8-style heads (non-e2e)** — raw boxes and scores: export wraps the output with **EfficientNMS_TRT** in the ONNX graph for NVIDIA TensorRT plugins (unchanged; no `trt_efficient_nms` needed).
 
 - **Segmentation** — separate path (masks, ROI, etc.); TRT plugins follow the exporter implementation.
 
 - Optional post-processing: ONNX simplification (`onnxsim` when available) and graph **cleanup** with **ONNX GraphSurgeon** when installed.
+
+- **TensorRT TopK quirk:** some older parsers reject ONNX **TopK** with **`axis=-1`**. This fork normalizes top-k exports to use a **positive axis** where relevant; if problems persist, use **`trt_efficient_nms=True`** to avoid in-graph TopK for post-processing entirely.
 
 ### ONNX output tensors (`onnx_trt` detection)
 
