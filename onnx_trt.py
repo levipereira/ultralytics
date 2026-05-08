@@ -5,10 +5,12 @@ def export_model(weights, topk_all, iou_thres, conf_thres, class_agnostic, poole
     # Initialize the model with the provided weights file
     model = YOLO(weights)
     
-    # Export the model to ONNX format with TensorRT optimization
+    # Packed ONNX for TensorRT / DeepStream (see README)
     model.export(
-        format="onnx_trt", 
-        dynamic=True, 
+        format="onnx",
+        onnx_output="enms",
+        end2end=False,
+        dynamic=True,
         topk_all=topk_all, 
         iou_thres=iou_thres, 
         conf_thres=conf_thres,

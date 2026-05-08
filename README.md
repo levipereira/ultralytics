@@ -58,6 +58,12 @@ When **`dynamic=True`**, **`imgsz`** and **`batch`** are **trace / example dimen
 
 The **output** tensor name for **`ds_yolo`** remains **`output`** (DeepStream-Yolo convention).
 
+### TensorRT FP16 profiling — why latency differs across `onnx_output` variants
+
+All `onnx_output` modes can be built to **FP16** TensorRT engines, but **end-to-end latency is not dominated by precision**: it is dominated by **how NMS appears in the ONNX graph** and how TensorRT maps it (fused many-op tail vs **EfficientNMS_TRT** vs **`NonMaxSuppression` / INMSLayer**). In representative **YOLO26n** runs, **default** and **`ds_yolo`** stayed near **~1.7 ms** mean inference (backbone-heavy; **`ds_yolo`** has **no NMS inside the engine**), while **`enms`** and **`onnx_nms`** landed near **~4.2 ms** because **one or few NMS-related layers** consumed a large share of per-layer time (e.g. **`EfficientNMS_TRT`** on the order of half of profiled layer time in one profile). **Choose the export for deployment constraints** (plugin API, DeepStream parser, portable ONNX NMS), not assuming “NMS in the graph” is automatically fastest.
+
+**Full report (tables, artifacts, takeaways):** [docs/en/guides/tensorrt-fp16-onnx-nms-variant-profiling.md](docs/en/guides/tensorrt-fp16-onnx-nms-variant-profiling.md)
+
 ---
 
 ## Parameter matrix (ONNX export)
@@ -214,7 +220,7 @@ Detection only. NMS is implemented with the TensorRT **EfficientNMS_TRT** plugin
 |--------|-------|-----------------|-------|
 | **`images`** (or custom) | `(B, 3, H, W)` | float32 | Input |
 | **`num_dets`** | `(B, 1)` | int32 | Count per image (packed layout) |
-| **`det_boxes`** | `(B, K, 4)` | float32 | **K = `topk_all`** |
+| **`det_boxes`** | `(B, K, 4)` | float32 | **K = `topk_all`**. **`xyxy`** from the EfficientNMS plugin (corner coordinates). |
 | **`det_scores`** | `(B, K)` | float32 | |
 | **`det_classes`** | `(B, K)` | float32 | Class id per slot (often float in the graph) |
 
@@ -247,11 +253,13 @@ Detection only. The graph uses the standard ONNX **`NonMaxSuppression`** operato
 
 **What this fork exposes as ONNX graph outputs:** the same **packed** tensors as **`enms`** so downstream code can stay aligned with the EfficientNMS layout—gather/scatter after NMS fills **`num_dets`**, **`det_boxes`**, **`det_scores`**, **`det_classes`**. Open the `.onnx` in Netron: you will see the **`NonMaxSuppression`** node and its **`selected_indices`**-style output wired into those packs.
 
+**`trtexec` / random inputs:** With **`--loadInputs`** omitted, TensorRT uses random data; scores rarely pass **`conf_thres`**, so **`NonMaxSuppression`** often returns **zero** selected rows. Graphs that packed those results with **empty** intermediate tensors used to trigger TensorRT runtime errors (e.g. `IShuffleLayer` / `Expand`, reshape volume 0→1). The pack after NMS pads to **`max_det`** with sentinels and masks so **batch size 1** engines stay valid even with zero selections.
+
 | Tensor (graph output) | Shape | Dtype (typical) | Notes |
 |--------|-------|-----------------|-------|
 | **`images`** (or custom) | `(B, 3, H, W)` | float32 | Input |
 | **`num_dets`** | `(B, 1)` | int32 | Packed count (not the raw `NumOutputBoxes` scalar alone) |
-| **`det_boxes`** | `(B, K, 4)` | float32 | **K = `topk_all`** |
+| **`det_boxes`** | `(B, K, 4)` | float32 | **K = `topk_all`**. **`xyxy`** absolute corners (same convention as **`enms`** / EfficientNMS plugin output), not raw head **center-xywh**—the exporter applies **`xywh2xyxy`** after gather so eval pipelines match. |
 | **`det_scores`** | `(B, K)` | float32 | |
 | **`det_classes`** | `(B, K)` | float32 | |
 

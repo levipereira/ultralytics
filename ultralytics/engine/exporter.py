@@ -538,23 +538,14 @@ class Exporter:
                 self.args.nms = False
             self.args.conf = self.args.conf or 0.25  # set conf default value for nms export
         self._configure_onnx_output(model, fmt)
-        if (
-            fmt in {"engine", "coreml"}
-            or self.args.nms
-            or (
-                fmt == "onnx"
-                and getattr(self.args, "onnx_output", "default") in {"enms", "onnx_nms", "ds_yolo"}
+        # TensorRT / CoreML builders often need an explicit max batch in the optimization profile; ONNX trace
+        # dimensions (batch, imgsz) are only example shapes when dynamic=True — do not warn for ONNX (confusing).
+        if fmt in {"engine", "coreml"} and self.args.dynamic and self.args.batch == 1:
+            LOGGER.warning(
+                f"'dynamic=True' with format={fmt!r} and batch=1: if your deployment tool needs a higher max batch "
+                f"in its optimization profile, re-export with a larger trace batch (e.g. batch=16). ONNX export does "
+                f"not require this; trace batch/imgsz are example dims only."
             )
-        ) and self.args.dynamic and self.args.batch == 1:
-            _oo_dyn = getattr(self.args, "onnx_output", "default") if fmt == "onnx" else "default"
-            tag = (
-                "nms=True"
-                if self.args.nms
-                else f"onnx_output={_oo_dyn}"
-                if fmt == "onnx" and _oo_dyn in {"enms", "onnx_nms", "ds_yolo"}
-                else f"format={self.args.format}"
-            )
-            LOGGER.warning(f"'dynamic=True' model with '{tag}' requires max batch size, i.e. 'batch=16'")
         if fmt == "edgetpu":
             if not LINUX or ARM64:
                 raise SystemError(
@@ -820,16 +811,6 @@ class Exporter:
         from ultralytics.utils.export.engine import best_onnx_opset, torch2onnx
 
         _oo = getattr(self.args, "onnx_output", "default")
-        if _oo == "enms" and self.args.simplify:
-            LOGGER.warning(
-                f"{prefix} graph simplifiers may remove TensorRT EfficientNMS_TRT custom ops; setting simplify=False."
-            )
-            self.args.simplify = False
-        if _oo == "onnx_nms" and self.args.simplify:
-            LOGGER.warning(
-                f"{prefix} graph simplifiers may remove onnx::NonMaxSuppression subgraph; setting simplify=False."
-            )
-            self.args.simplify = False
 
         opset = self.args.opset or best_onnx_opset(onnx, cuda="cuda" in self.device.type)
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset}...")
@@ -885,7 +866,7 @@ class Exporter:
                 input_names=[in_name],
                 output_names=output_names,
                 dynamic=dynamic or None,
-                do_constant_folding=_oo != "onnx_nms",
+                do_constant_folding=True,
             )
 
         # Checks
@@ -2038,17 +2019,11 @@ class ONNX_EfficientNMS_TRT(torch.nn.Module):
         
 
     def forward(self, x):
-        if isinstance(x, list):  
+        if isinstance(x, list):
             x = x[1]
         x = x.permute(0, 2, 1)
-        bboxes_x = x[..., 0:1]
-        bboxes_y = x[..., 1:2]
-        bboxes_w = x[..., 2:3]
-        bboxes_h = x[..., 3:4]
-        bboxes = torch.cat([bboxes_x, bboxes_y, bboxes_w, bboxes_h], dim = -1)
-        bboxes = bboxes.unsqueeze(2) # [n_batch, n_bboxes, 4] -> [n_batch, n_bboxes, 1, 4]
-        obj_conf = x[..., 4:]
-        scores = obj_conf
+        bboxes = x[..., :4].unsqueeze(2)  # [B, N, 1, 4]
+        scores = x[..., 4:]               # [B, N, nc]
         if self.class_agnostic == 1:
             num_det, det_boxes, det_scores, det_classes = TRT_EfficientNMS.apply(bboxes, scores, self.background_class, self.box_coding,
                                                                         self.iou_threshold, self.max_obj,
@@ -2077,20 +2052,13 @@ class ONNX_EfficientNMSX_TRT(torch.nn.Module):
         self.score_activation = 0
         self.score_threshold = score_thres
         self.n_classes=n_classes
-        
 
     def forward(self, x):
-        if isinstance(x, list):  
+        if isinstance(x, list):
             x = x[1]
         x = x.permute(0, 2, 1)
-        bboxes_x = x[..., 0:1]
-        bboxes_y = x[..., 1:2]
-        bboxes_w = x[..., 2:3]
-        bboxes_h = x[..., 3:4]
-        bboxes = torch.cat([bboxes_x, bboxes_y, bboxes_w, bboxes_h], dim = -1)
-        bboxes = bboxes.unsqueeze(2) # [n_batch, n_bboxes, 4] -> [n_batch, n_bboxes, 1, 4]
-        obj_conf = x[..., 4:]
-        scores = obj_conf
+        bboxes = x[..., :4].unsqueeze(2)  # [B, N, 1, 4]
+        scores = x[..., 4:]               # [B, N, nc]
         if self.class_agnostic == 1:
             num_det, det_boxes, det_scores, det_classes, det_indices = TRT_EfficientNMSX.apply(bboxes, scores, self.background_class, self.box_coding,
                                                                         self.iou_threshold, self.max_obj,
@@ -2178,12 +2146,7 @@ class ONNX_End2End_MASK_TRT(torch.nn.Module):
         proto=x[1]
         det = det.permute(0, 2, 1)
 
-        bboxes_x = det[..., 0:1]
-        bboxes_y = det[..., 1:2]
-        bboxes_w = det[..., 2:3]
-        bboxes_h = det[..., 3:4]
-        bboxes = torch.cat([bboxes_x, bboxes_y, bboxes_w, bboxes_h], dim = -1)
-        bboxes = bboxes.unsqueeze(2) # [n_batch, n_bboxes, 4] -> [n_batch, n_bboxes, 1, 4]
+        bboxes = det[..., :4].unsqueeze(2)  # [B, N, 1, 4]
         scores = det[..., 4: 4 + self.n_classes]
        
         batch_size, nm, proto_h, proto_w = proto.shape

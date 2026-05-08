@@ -81,7 +81,7 @@ def torch2onnx(
         input_names (list[str]): List of input tensor names.
         output_names (list[str]): List of output tensor names.
         dynamic (bool | dict, optional): Whether to enable dynamic axes.
-        do_constant_folding (bool): If False, disables ONNX constant folding (used for ``onnx_output=onnx_nms``).
+        do_constant_folding (bool): If False, disables ONNX constant folding.
 
     Notes:
         Setting `do_constant_folding=True` may cause issues with DNN inference for torch>=1.12.

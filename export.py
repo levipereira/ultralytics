@@ -5,8 +5,7 @@ def export_model(weights):
     # Initialize the model with the provided weights file
     model = YOLO(weights)
     
-    # Export the model to ONNX format with TensorRT optimization
-    model.export(format="onnx_trt")
+    model.export(format="onnx", onnx_output="enms", end2end=False)
 
 def main():
     # Set up the argument parser
